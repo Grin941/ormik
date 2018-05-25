@@ -1,0 +1,20 @@
+# vim swap files
+*.swo
+*.swp
+**/.cache/
+
+# python compiled
+**/__pycache__/
+*.pyc
+
+# ctags
+**/tags
+
+# python setup dirs
+**/build
+**/dist
+**/*.egg-info
+**/.eggs
+
+# Test coverage
+**/.coverage

@@ -1,0 +1,22 @@
+# Natural language toolkit
+nltk==3.2.5
+
+# Add a progress meter to your loops in a second
+tqdm==4.19.5
+
+# Testing your application
+pytest==3.3.2; python_version >= '3.3'
+pytest==3.2.5; python_version < '3.3'
+pytest-cov==2.4.0
+codecov==2.0.15
+
+# Code metrics
+flake8==3.5.0
+mccabe==0.6.1
+
+# Vim requirements
+neovim==0.2.1
+jedi==0.11.1
+
+# Python 2/3 compitability
+future==0.16.0; python_version < '3.3'
