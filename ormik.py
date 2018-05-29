@@ -1,68 +1,80 @@
-import collections
-
-
 class Field:
-    def __get__(self, obj, obj_type=None):
-        return obj._data[self._name]
 
-    def __set__(self, obj, value):
-        obj._data[self._name] = value
+    def __init__(self, name=None, **kwargs):
+        self.name = name
 
-
-class CharField(Field):
-    def __set__(self, obj, value):
-        if not isinstance(value, str):
-            raise TypeError(obj, self._name, str, value)
-        super().__set__(obj, value)
+    def __set__(self, instance, value):
+        instance.__dict__[self.name] = value
 
 
-class Relation(Field):
-    def __init__(self, rel_model_class, reverse_name):
-        self._rel_model_class = rel_model_class
-        self._reverse_name = reverse_name
+class SizedField(Field):
 
-    def __set__(self, obj, value):
-        if not isinstance(value, self._rel_model_class):
-            raise TypeError(obj, self._name, self._rel_model_class, value)
-        super().__set__(obj, value)
+    def __init__(self, *args, maxlen=128, **kwargs):
+        self.maxlen = maxlen
+        super().__init__(*args, **kwargs)
 
-
-class ReverseRelation:
-    def __init__(self, origin_model, field_name):
-        self._origin_model = origin_model,
-        self._field_name = field_name
-
-    def __get__(self, obj, obj_type=None):
-        return self._origin_model.S.filter(self._field_name=obj)
+    def __set__(self, instance, value):
+        if len(value) > self.maxlen:
+            raise ValueError(
+                f'"{self.name}" field maxlen should be < {self.maxlen}'
+            )
+        super().__set__(instance, value)
 
 
-class ModelMeta:
-    def __new__(cls, name, bases, attrs):
-        type_new = type(name, bases, attrs)
-        for field_name, field in attrs.items():
-            if isinstance(field, Relation):
-                setattr(
-                    field._rel_model_class,
-                    self._reverse_name,
-                    ReverseRelation(type_new, field_name)
-                )
-            else:
-                field._name = field_name
-        attrs['_data'] = collections.defaultdict(attrs.keys())
-        return type_new
+class TypedField(Field):
+    ty = object
+
+    def __set__(self, instance, value):
+        if not isinstance(value, self.ty):
+            raise TypeError(
+                f'Expected {self.ty} type for "{self.name}" Field'
+            )
+        super().__set__(instance, value)
+
+
+class NullableField(Field):
+
+    def __init__(self, *args, nullable=True, **kwargs):
+        self.nullable = True
+        super().__init__(*args, **kwargs)
+
+
+class CharField(TypedField, SizedField, NullableField):
+    ty = str
+
+
+class IntegerField(TypedField, NullableField):
+    ty = int
+
+
+class ModelMeta(type):
+
+    def __new__(mtcls, name, bases, clsdict):
+        fields_name = [
+            key for key, val in clsdict.items() if
+            isinstance(val, Field)
+        ]
+
+        for field_name in fields_name:
+            clsdict[field_name].name = field_name
+
+        model_cls = super().__new__(mtcls, name, bases, clsdict)
+        model_cls._fields = fields_name
+
+        return model_cls
 
 
 class Model(metaclass=ModelMeta):
-    pass
+
+    def __init__(self, *args, **kwargs):
+        for field_name, field_value in kwargs.items():
+            if field_name in self.__class__._fields:
+                setattr(self, field_name, field_value)
 
 
-class ValidatorMeta(type):
-    def __call__(cls, **attrs):
-        for attr_name, attr in attrs.items():
-            if not isinstance(attr, getattr(cls, attr_name)):
-                raise TypeError()
-        return dict(**attrs)
+if __name__ == '__main__':
+    class MyModel(Model):
+        a = CharField()
 
-
-class Validator(metaclass=ValidatorMeta):
-    pass
+    my_model = MyModel(a='123')
+    print(my_model.a)
