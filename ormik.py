@@ -66,7 +66,7 @@ class ForeignKeyField(Field):
         super().__set__(instance, value)
 
 
-class ReversedForeignKeyField:
+class ReversedForeignKeyField(Field):
 
     def __init__(self, origin_model, field_name, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -105,56 +105,55 @@ class AutoField(IntegerField):
 
 class ModelMeta(type):
 
-    def __new__(mtcls, name, bases, clsdict):
-        model_fields, model_table = {
-            key: val for key, val in clsdict.items() if
-            isinstance(val, Field)
-        }, name.lower()
+    @staticmethod
+    def _add_reversed_fk(fk_field, fk_model):
+        setattr(
+            fk_field.rel_model,
+            fk_field.reverse_name,
+            ReversedForeignKeyField(fk_model, fk_field.name)
+        )
 
+    @staticmethod
+    def _validate_pk_count(pk_count, model_name):
+        # No more than 1 PK should be defined
+        if pk_count > 1:
+            raise ValueError(
+                f'Model "{model_name}" has {pk_count} PKs.'
+            )
+
+    def __new__(mtcls, name, bases, clsdict):
         # Add bases fields to model_cls
         for base_class in bases:
             if not type(base_class) == ModelMeta: continue
 
             for field_name, field in base_class._fields.items():
-                model_fields[field_name] = field
                 clsdict[field_name] = field
 
         # Create model_cls
         model_cls = super().__new__(mtcls, name, bases, clsdict)
-        model_cls._fields = model_fields
-        model_cls._table = clsdict.get('__tablename__', model_table)
+        model_cls._fields = {
+            attr_name: attr for attr_name, attr in
+            model_cls.__dict__.items() if
+            isinstance(attr, Field)
+        }
+        model_cls._table = clsdict.get('__tablename__', name.lower())
 
         pk_count = 0
-        for model_field_name in model_fields:
-            model_field = clsdict[model_field_name]
+        for model_field_name, model_field in model_cls._fields.items():
             model_field.name = model_field_name
             if model_field.is_primary_key:
                 pk_count += 1
 
             # Create reverse_attr for FK model
             if isinstance(model_field, ForeignKeyField):
-                setattr(
-                    model_field.rel_model,
-                    model_field.reverse_name,
-                    ReversedForeignKeyField(model_cls, model_field.name)
-                )
+                ModelMeta._add_reversed_fk(model_field, model_cls)
 
-        if pk_count > 2:
-            # Only one PK may be defined
-            raise ValueError(
-                f'Model "{name}" has {pk_count - 1} PKs.'
-            )
-        elif pk_count == 2:
-            # Model has user defined PK, so exclude default one
-            model_fields.pop('_id')
-            clsdict.pop('_id')
+        ModelMeta._validate_pk_count(pk_count, name)
 
         return model_cls
 
 
 class Model(metaclass=ModelMeta):
-
-    _id = AutoField()
 
     def __init__(self, *args, **kwargs):
         for field_name, field in self.__class__._fields.items():
