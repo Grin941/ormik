@@ -160,33 +160,16 @@ class QueryManager:
 
     def __init__(self, *args, **kwargs):
         self.db = None
+        self.model = None
 
     def __set__(self, model, db_instance):
         if not isinstance(db_instance, SqliteDatabase):
             raise ValueError()
         self.db = db_instance
+        self.model = model
 
     def __get__(self, model, model_type=None):
         return self.db
-
-
-class Model(metaclass=ModelMeta):
-
-    query = QueryManager()
-
-    def __init__(self, *args, **kwargs):
-        if self.query is None:
-            raise ValueError(
-                f'Please, register model '
-                f'"{self.__class__.__name__}" to database.'
-            )
-        for field_name, field in self.fields.items():
-            field_value = kwargs.get(field_name, field.default_value)
-            setattr(self, field_name, field_value)
-
-    @property
-    def fields(self):
-        return self.__class__._fields
 
     def create(self):
         pass
@@ -206,13 +189,41 @@ class Model(metaclass=ModelMeta):
     def filter(self, *args, **kwargs):
         pass
 
+    def create_table(self, *args, **kwargs):
+        pass
+
+    def delete_table(self, *args, **kwargs):
+        pass
+
+
+class Model(metaclass=ModelMeta):
+
+    query = QueryManager()
+
+    def __init__(self, *args, **kwargs):
+        if self.query is None:
+            raise ValueError(
+                f'Please, register model '
+                f'"{self.__class__.__name__}" to database.'
+            )
+        for field_name, field in self.fields.items():
+            field_value = kwargs.get(field_name, field.default_value)
+            setattr(self, field_name, field_value)
+
+    def __getattr__(self, value):
+        return getattr(self.query, value)
+
+    @property
+    def fields(self):
+        return self.__class__._fields
+
     @classmethod
     def create_table(cls, *args, **kwargs):
-        pass
+        return cls.query.create_table(*args, **kwargs)
 
     @classmethod
     def delete_table(cls, *args, **kwargs):
-        pass
+        return cls.query.delete_table(*args, **kwargs)
 
 
 class SqliteDatabase:
@@ -240,7 +251,7 @@ class SqliteDatabase:
                     f'Please pass list of models to {self}.'
                     f'"{model}" is not a Model'
                 )
-            setattr(model, 'query', self)
+            model.query = self
 
 
 if __name__ == '__main__':
