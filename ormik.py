@@ -156,114 +156,97 @@ class ModelMeta(type):
         return model_cls
 
 
+class QueryManager:
+
+    def __init__(self, *args, **kwargs):
+        self.db = None
+
+    def __set__(self, model, db_instance):
+        if not isinstance(db_instance, SqliteDatabase):
+            raise ValueError()
+        self.db = db_instance
+
+    def __get__(self, model, model_type=None):
+        return self.db
+
+
 class Model(metaclass=ModelMeta):
 
-    def __init__(self, *args, connection=None, **kwargs):
-        if connection is None:
+    query = QueryManager()
+
+    def __init__(self, *args, **kwargs):
+        if self.query is None:
             raise ValueError(
-                f'Please, pass connection to work with a database.'
+                f'Please, register model '
+                f'"{self.__class__.__name__}" to database.'
             )
-        for field_name, field in self.__class__._fields.items():
+        for field_name, field in self.fields.items():
             field_value = kwargs.get(field_name, field.default_value)
             setattr(self, field_name, field_value)
 
+    @property
+    def fields(self):
+        return self.__class__._fields
 
-class _ConnectionState(object):
-    def __init__(self, **kwargs):
-        super(_ConnectionState, self).__init__(**kwargs)
-        self.reset()
+    def create(self):
+        pass
 
-    def reset(self):
-        self.closed = True
-        self.conn = None
-        self.transactions = []
+    def save(self, *args, **kwargs):
+        pass
 
-    def set_connection(self, conn):
-        self.conn = conn
-        self.closed = False
+    def update(self, *args, **kwargs):
+        pass
 
+    def delete(self):
+        pass
 
-class ExceptionWrapper(object):
-    __slots__ = ('exceptions',)
-    def __init__(self, exceptions):
-        self.exceptions = exceptions
-    def __enter__(self): pass
-    def __exit__(self, exc_type, exc_value, traceback):
-        if exc_type is None:
-            return
-        if exc_type.__name__ in self.exceptions:
-            new_type = self.exceptions[exc_type.__name__]
-            exc_args = exc_value.args
-            reraise(new_type, new_type(*exc_args), traceback)
+    def select(self, *args, **kwargs):
+        pass
 
-EXCEPTIONS = {
-    'ConstraintError': IntegrityError,
-    'DatabaseError': DatabaseError,
-    'DataError': DataError,
-    'IntegrityError': IntegrityError,
-    'InterfaceError': InterfaceError,
-    'InternalError': InternalError,
-    'NotSupportedError': NotSupportedError,
-    'OperationalError': OperationalError,
-    'ProgrammingError': ProgrammingError}
+    def filter(self, *args, **kwargs):
+        pass
 
-__exception_wrapper__ = ExceptionWrapper(EXCEPTIONS)
+    @classmethod
+    def create_table(cls, *args, **kwargs):
+        pass
+
+    @classmethod
+    def delete_table(cls, *args, **kwargs):
+        pass
 
 
 class SqliteDatabase:
 
     def __init__(self, database):
-        self.database = database
+        # self.connection = self._connect(database)
+        self.connection = None
 
-    def _connect(self):
+    def _connect(self, database):
         conn = sqlite3.connect(
-            self.database,
-            timeout=self._timeout,
-            **self.connect_params
+            database
         )
         conn.isolation_level = None
-        try:
-            self._add_conn_hooks(conn)
-        except:
-            conn.close()
-            raise
         return conn
 
-    def connect(self, reuse_if_open=False):
-        with self._lock:
-            if self.deferred:
-                raise Exception('Error, database must be initialized before '
-                                'opening a connection.')
-            if not self._state.closed:
-                if reuse_if_open:
-                    return False
-                raise OperationalError('Connection already opened.')
+    def register_models(self, models=None):
+        if models is None:
+            models = []
+        elif not isinstance(models, list):
+            models = [models]
 
-            self._state.reset()
-            with __exception_wrapper__:
-                self._state.set_connection(self._connect())
-                self._initialize_connection(self._state.conn)
-        return True
-
-    def _initialize_connection(self, conn):
-        pass
+        for model in models:
+            if not type(model) == ModelMeta:
+                raise ValueError(
+                    f'Please pass list of models to {self}.'
+                    f'"{model}" is not a Model'
+                )
+            setattr(model, 'query', self)
 
 
 if __name__ == '__main__':
-    class MyModel(Model):
-
-        a = CharField()
-        b = CharField(default='def')
-        c = CharField()
-        # d = CharField(null=False)
-        # e = CharField(default=123)
-
-    class Author(MyModel):
-        __tablename__ = 'author_table'
+    class Author(Model):
 
         id = AutoField()
-        num = IntegerField(default=0)
-        status = CharField(default='new')
         name = CharField()
 
     class Book(Model):
@@ -271,10 +254,11 @@ if __name__ == '__main__':
         author = ForeignKeyField(Author, 'books')
         title = CharField()
 
-    my_model = MyModel(a='123')
+    db = SqliteDatabase('tmp.db')
+    db.register_models([Author, Book])
+
     author = Author(name='William Gibson')
     book = Book(author=author, title='Title')
 
-    print(my_model._table, my_model._fields.keys())
     print(author._table, author._fields.keys())
     print(book.author.name, author.books)
