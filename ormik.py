@@ -1,3 +1,6 @@
+import sqlite3
+
+
 class Field:
 
     def __init__(
@@ -155,10 +158,95 @@ class ModelMeta(type):
 
 class Model(metaclass=ModelMeta):
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, connection=None, **kwargs):
+        if connection is None:
+            raise ValueError(
+                f'Please, pass connection to work with a database.'
+            )
         for field_name, field in self.__class__._fields.items():
             field_value = kwargs.get(field_name, field.default_value)
             setattr(self, field_name, field_value)
+
+
+class _ConnectionState(object):
+    def __init__(self, **kwargs):
+        super(_ConnectionState, self).__init__(**kwargs)
+        self.reset()
+
+    def reset(self):
+        self.closed = True
+        self.conn = None
+        self.transactions = []
+
+    def set_connection(self, conn):
+        self.conn = conn
+        self.closed = False
+
+
+class ExceptionWrapper(object):
+    __slots__ = ('exceptions',)
+    def __init__(self, exceptions):
+        self.exceptions = exceptions
+    def __enter__(self): pass
+    def __exit__(self, exc_type, exc_value, traceback):
+        if exc_type is None:
+            return
+        if exc_type.__name__ in self.exceptions:
+            new_type = self.exceptions[exc_type.__name__]
+            exc_args = exc_value.args
+            reraise(new_type, new_type(*exc_args), traceback)
+
+EXCEPTIONS = {
+    'ConstraintError': IntegrityError,
+    'DatabaseError': DatabaseError,
+    'DataError': DataError,
+    'IntegrityError': IntegrityError,
+    'InterfaceError': InterfaceError,
+    'InternalError': InternalError,
+    'NotSupportedError': NotSupportedError,
+    'OperationalError': OperationalError,
+    'ProgrammingError': ProgrammingError}
+
+__exception_wrapper__ = ExceptionWrapper(EXCEPTIONS)
+
+
+class SqliteDatabase:
+
+    def __init__(self, database):
+        self.database = database
+
+    def _connect(self):
+        conn = sqlite3.connect(
+            self.database,
+            timeout=self._timeout,
+            **self.connect_params
+        )
+        conn.isolation_level = None
+        try:
+            self._add_conn_hooks(conn)
+        except:
+            conn.close()
+            raise
+        return conn
+
+    def connect(self, reuse_if_open=False):
+        with self._lock:
+            if self.deferred:
+                raise Exception('Error, database must be initialized before '
+                                'opening a connection.')
+            if not self._state.closed:
+                if reuse_if_open:
+                    return False
+                raise OperationalError('Connection already opened.')
+
+            self._state.reset()
+            with __exception_wrapper__:
+                self._state.set_connection(self._connect())
+                self._initialize_connection(self._state.conn)
+        return True
+
+    def _initialize_connection(self, conn):
+        pass
 
 
 if __name__ == '__main__':
