@@ -1,5 +1,4 @@
 import sqlite3
-import collections
 
 
 CASCADE = 'CASCADE'
@@ -174,8 +173,8 @@ class ModelMeta(type):
 
     @staticmethod
     def _validate_pk_count(pk_count, model_name):
-        # No more than 1 PK should be defined
-        if pk_count > 1:
+        # 1 PK should be defined
+        if pk_count != 1 and model_name != 'Model':
             raise ValueError(
                 f'Model "{model_name}" has {pk_count} PKs.'
             )
@@ -236,9 +235,16 @@ class QuerySet:
             '__no__': ('t0', [])
         }
 
+    def add_field_to_select(self, field, fk_key='__no__'):
+        self.models_fields_to_select[fk_key][1].append(field)
+
+    def add_table_alias_to_select(self, alias, fk_key):
+        self.models_fields_to_select[fk_key] = (alias, [])
+
     @property
     def query(self):
-        return ''.join(self.sql_list) + ';'
+        query = ''.join(self.sql_list)
+        return f'{query};'
 
     def __call__(self, *args, **kwargs):
         print(self.query)
@@ -254,6 +260,9 @@ class QueryManager:
 
     def _populate_models_fields_to_select(self, *args, **kwargs):
         tables_counter = 0
+        if not args:
+            self.queryset.add_field_to_select('*')
+
         for field in args:
             fk, field_name = '__no__', field
             if '__' in field:
@@ -261,29 +270,62 @@ class QueryManager:
 
             if fk not in self.queryset.models_fields_to_select:
                 tables_counter += 1
-                self.queryset.models_fields_to_select[fk] = (
-                    f't{tables_counter}', []
+                self.queryset.add_table_alias_to_select(
+                    f't{tables_counter}', fk_key=fk
                 )
 
-            self.queryset.models_fields_to_select[fk][1].append(field_name)
+            self.queryset.add_field_to_select(field_name, fk_key=fk)
 
     def __get__(self, model, model_type=None):
         return self
 
-    def create(self):
-        pass
+    def create(self, *args, **kwargs):
+        inst = self.model(**kwargs)
+        columns, values = [], []
+        for field_name, field in inst.fields.items():
+            field_value = getattr(inst, field_name)
+            if isinstance(field, ForeignKeyField):
+                field_value = field_value.id
 
-    def save(self, *args, **kwargs):
-        pass
+            columns.append(field_name)
+            values.append(field_value)
+
+        sql = (
+            f'INSERT INTO {self.model._table} {tuple(columns)} '
+            f'VALUES {tuple(values)}'
+        )
+        self.queryset.append_statement(sql)
+
+        return self.queryset
 
     def update(self, *args, **kwargs):
-        pass
+        update_statements = []
+        for field_name, field_value in kwargs.items():
+            if isinstance(field_value, Model):
+                field_value = field_value.id
+
+            if isinstance(field_value, str):
+                update_statement = f"{field_name} = '{field_value}'"
+            else:
+                update_statement = f"{field_name} = {field_value}"
+            update_statements.append(update_statement)
+        update_statements = ', '.join(update_statements)
+
+        sql = (
+            f'UPDATE {self.model._table} '
+            f'SET {update_statements}'
+        )
+        self.queryset.append_statement(sql)
+
+        return self.queryset
 
     def delete(self):
-        pass
+        sql = f'DELETE FROM {self.model._table}'
+        self.queryset.append_statement(sql)
+
+        return self.queryset
 
     def select(self, *args, **kwargs):
-
         self._populate_models_fields_to_select(*args)
 
         sql_fields_statement = []
@@ -298,8 +340,8 @@ class QueryManager:
             )
             if isinstance(field, ForeignKeyField):
                 sql_from_statement[field.name] = (
-                    f'INNER JOIN {field.rel_model._table} AS {table_alias} '
-                    f'ON (t0.{field.name} = {table_alias}.id)'
+                    f'LEFT JOIN {field.rel_model._table} AS {table_alias} '
+                    f'ON t0.{field.name} = {table_alias}.id'
                 )
             else:
                 sql_from_statement[field] = f'{table_name} AS {table_alias}'
@@ -336,7 +378,7 @@ class QueryManager:
 
         return self.queryset
 
-    def delete_table(self, *args, **kwargs):
+    def drop_table(self, *args, **kwargs):
         sql = f'DROP TABLE {self.model._table}'
         self.queryset.append_statement(sql)
 
@@ -399,6 +441,7 @@ if __name__ == '__main__':
 
     class Book(Model):
 
+        id = AutoField()
         author = ForeignKeyField(Author, 'books')
         title = CharField()
         pages = IntegerField()
@@ -406,17 +449,23 @@ if __name__ == '__main__':
     db = SqliteDatabase('tmp.db')
     db.register_models([Author, Book])
 
-    id = AutoField()
     author = Author(name='William Gibson')
     book = Book(author=author, title='Title', pages=100)
 
     print(author._table, author._fields.keys())
     print(book.author.name, author.books)
 
-    a = Author.create_table()
+    Author.create_table()
     Book.create_table()
 
-    Author.delete_table()
-    Book.delete_table()
+    Author.drop_table()
+    Book.drop_table()
 
     Book.select('title', 'pages', 'author__name')
+    Book.select()
+
+    # TODO: author.id is defined as None
+    # TODO: each model should have pk -> Primary Key
+    Book.create(author=author, title='New', pages=80)
+    Book.update(pages=100000, title='LOL!', author=author)
+    Book.delete()
