@@ -1,4 +1,5 @@
 import sqlite3
+import collections
 
 
 CASCADE = 'CASCADE'
@@ -214,8 +215,11 @@ class ModelMeta(type):
         """ Make query upon Model class.
         Example: Model.create_table()
         """
-        queryset = getattr(cls.query_manager, attr)
-        return queryset()
+        if hasattr(cls.query_manager, attr):
+            def wrapper(*args, **kwargs):
+                return getattr(cls.query_manager, attr)(*args, **kwargs)()
+            return wrapper
+        raise AttributeError(attr)
 
 
 class QuerySet:
@@ -228,10 +232,13 @@ class QuerySet:
 
     def reset(self):
         self.sql_list = []
+        self.models_fields_to_select = {
+            '__no__': ('t0', [])
+        }
 
     @property
     def query(self):
-        return ''.join(self.sql_list)
+        return ''.join(self.sql_list) + ';'
 
     def __call__(self, *args, **kwargs):
         print(self.query)
@@ -244,6 +251,21 @@ class QueryManager:
         self.db = db
         self.model = model
         self.queryset = QuerySet()
+
+    def _populate_models_fields_to_select(self, *args, **kwargs):
+        tables_counter = 0
+        for field in args:
+            fk, field_name = '__no__', field
+            if '__' in field:
+                fk, field_name = field.split('__')
+
+            if fk not in self.queryset.models_fields_to_select:
+                tables_counter += 1
+                self.queryset.models_fields_to_select[fk] = (
+                    f't{tables_counter}', []
+                )
+
+            self.queryset.models_fields_to_select[fk][1].append(field_name)
 
     def __get__(self, model, model_type=None):
         return self
@@ -261,7 +283,41 @@ class QueryManager:
         pass
 
     def select(self, *args, **kwargs):
-        pass
+
+        self._populate_models_fields_to_select(*args)
+
+        sql_fields_statement = []
+        sql_from_statement = {}
+        for fk, (
+            table_alias, table_fields_list
+        ) in self.queryset.models_fields_to_select.items():
+            # Fill FROM tables
+            table_name, field = (
+                self.model._table,
+                self.model._fields.get(fk, fk)
+            )
+            if isinstance(field, ForeignKeyField):
+                sql_from_statement[field.name] = (
+                    f'INNER JOIN {field.rel_model._table} AS {table_alias} '
+                    f'ON (t0.{field.name} = {table_alias}.id)'
+                )
+            else:
+                sql_from_statement[field] = f'{table_name} AS {table_alias}'
+
+            # Fill SELECT fields
+            for table_field in table_fields_list:
+                sql_fields_statement.append(f'{table_alias}.{table_field}')
+
+        sql_fields_statement = ', '.join(sql_fields_statement)
+        sql_from_statement = ' '.join(sql_from_statement.values())
+
+        sql = (
+            f'SELECT {sql_fields_statement} '
+            f'FROM {sql_from_statement}'
+        )
+        self.queryset.append_statement(sql)
+
+        return self.queryset
 
     def where(self, *args, **kwargs):
         pass
@@ -274,14 +330,14 @@ class QueryManager:
         sql = (
             f'CREATE TABLE IF NOT EXISTS {self.model._table} ('
             f'{fields_declaration}'
-            f');'
+            f')'
         )
         self.queryset.append_statement(sql)
 
         return self.queryset
 
     def delete_table(self, *args, **kwargs):
-        sql = f'DROP TABLE {self.model._table};'
+        sql = f'DROP TABLE {self.model._table}'
         self.queryset.append_statement(sql)
 
         return self.queryset
@@ -345,18 +401,22 @@ if __name__ == '__main__':
 
         author = ForeignKeyField(Author, 'books')
         title = CharField()
+        pages = IntegerField()
 
     db = SqliteDatabase('tmp.db')
     db.register_models([Author, Book])
 
+    id = AutoField()
     author = Author(name='William Gibson')
-    book = Book(author=author, title='Title')
+    book = Book(author=author, title='Title', pages=100)
 
     print(author._table, author._fields.keys())
     print(book.author.name, author.books)
 
-    Author.create_table()
+    a = Author.create_table()
     Book.create_table()
 
     Author.delete_table()
     Book.delete_table()
+
+    Book.select('title', 'pages', 'author__name')
