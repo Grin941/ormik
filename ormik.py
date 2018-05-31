@@ -1,7 +1,59 @@
 import sqlite3
 
 
+CASCADE = 'CASCADE'
+RESTRICT = 'RESTRICT'
+SET_NULL = 'SET_NULL'
+NO_ACTION = 'NO ACTION'
+
+
+class FieldSQL:
+
+    SQL_TYPES_MAPPING = {
+        str: 'CHAR',
+        int: 'INT',
+        bool: 'BOOL',
+    }
+
+    def _generate_field_sql(self, field):
+        field_type = int if not hasattr(field, 'ty') else field.ty
+        sql = f'{field.name} {self.SQL_TYPES_MAPPING[field_type]}'
+
+        if hasattr(field, 'max_length'):
+            sql += f'({field.max_length})'
+
+        if field.is_primary_key:
+            sql += f' PRIMARY KEY'
+
+        if field.is_nullable:
+            sql += f' NOT NULL'
+
+        if field.default_value is not None:
+            sql += f' DEFAULT {field.default_value}'
+
+        return sql
+
+    def _generate_fk_constraints(self, field):
+        return (
+            f' FOREIGN KEY ({field.name})'
+            f' REFERENCES {field.rel_model._table} ({field.name})'
+            f' ON DELETE {field.on_delete} ON UPDATE {field.on_update}'
+        )
+
+    def __set__(self, field, value):
+        self.field = field
+
+    def __get__(self, field, field_type=None):
+        return (
+            f'{self._generate_field_sql(field)},'
+            f'{self._generate_fk_constraints(field)}'
+        ) if isinstance(field, ForeignKeyField) else \
+            f'{self._generate_field_sql(field)}'
+
+
 class Field:
+
+    sql = FieldSQL()
 
     def __init__(
         self,
@@ -12,6 +64,7 @@ class Field:
         self.is_nullable = null
         self.default_value = default
         self.is_primary_key = primary_key
+        self.sql = self
 
     def __set__(self, instance, value):
         if not self.is_nullable and self.default_value is None:
@@ -56,12 +109,14 @@ class ForeignKeyField(Field):
 
     def __init__(
         self, model, reverse_name, *args,
-        on_delete=None, on_update=None,
+        on_delete=NO_ACTION, on_update=NO_ACTION,
         **kwargs
     ):
         super().__init__(*args, **kwargs)
         self.rel_model = model
         self.reverse_name = reverse_name
+        self.on_delete = on_delete
+        self.on_update = on_update
 
     def __set__(self, instance, value):
         if not isinstance(value, self.rel_model):
@@ -155,21 +210,43 @@ class ModelMeta(type):
 
         return model_cls
 
+    def __getattr__(cls, attr):
+        """ Make query upon Model class.
+        Example: Model.create_table()
+        """
+        queryset = getattr(cls.query_manager, attr)
+        return queryset()
+
+
+class QuerySet:
+
+    def __init__(self, *args, **kwargs):
+        self.reset()
+
+    def append_statement(self, sql_statement):
+        self.sql_list.append(sql_statement)
+
+    def reset(self):
+        self.sql_list = []
+
+    @property
+    def query(self):
+        return ''.join(self.sql_list)
+
+    def __call__(self, *args, **kwargs):
+        print(self.query)
+        self.reset()
+
 
 class QueryManager:
 
-    def __init__(self, *args, **kwargs):
-        self.db = None
-        self.model = None
-
-    def __set__(self, model, db_instance):
-        if not isinstance(db_instance, SqliteDatabase):
-            raise ValueError()
-        self.db = db_instance
+    def __init__(self, db, model):
+        self.db = db
         self.model = model
+        self.queryset = QuerySet()
 
     def __get__(self, model, model_type=None):
-        return self.db
+        return self
 
     def create(self):
         pass
@@ -186,22 +263,37 @@ class QueryManager:
     def select(self, *args, **kwargs):
         pass
 
-    def filter(self, *args, **kwargs):
+    def where(self, *args, **kwargs):
         pass
 
     def create_table(self, *args, **kwargs):
-        pass
+        fields_declaration = ', '.join([
+            field.sql for field in self.model._fields.values()
+        ])
+
+        sql = (
+            f'CREATE TABLE IF NOT EXISTS {self.model._table} ('
+            f'{fields_declaration}'
+            f');'
+        )
+        self.queryset.append_statement(sql)
+
+        return self.queryset
 
     def delete_table(self, *args, **kwargs):
-        pass
+        sql = f'DROP TABLE {self.model._table};'
+        self.queryset.append_statement(sql)
+
+        return self.queryset
 
 
 class Model(metaclass=ModelMeta):
 
-    query = QueryManager()
-
     def __init__(self, *args, **kwargs):
-        if self.query is None:
+        if self.query_manager is None:
+            # query_manager attribute is set to a model
+            # when register in database,
+            # e.g. db.register_models(Model)
             raise ValueError(
                 f'Please, register model '
                 f'"{self.__class__.__name__}" to database.'
@@ -210,20 +302,9 @@ class Model(metaclass=ModelMeta):
             field_value = kwargs.get(field_name, field.default_value)
             setattr(self, field_name, field_value)
 
-    def __getattr__(self, value):
-        return getattr(self.query, value)
-
     @property
     def fields(self):
         return self.__class__._fields
-
-    @classmethod
-    def create_table(cls, *args, **kwargs):
-        return cls.query.create_table(*args, **kwargs)
-
-    @classmethod
-    def delete_table(cls, *args, **kwargs):
-        return cls.query.delete_table(*args, **kwargs)
 
 
 class SqliteDatabase:
@@ -251,7 +332,7 @@ class SqliteDatabase:
                     f'Please pass list of models to {self}.'
                     f'"{model}" is not a Model'
                 )
-            model.query = self
+            model.query_manager = QueryManager(self, model)
 
 
 if __name__ == '__main__':
@@ -273,3 +354,9 @@ if __name__ == '__main__':
 
     print(author._table, author._fields.keys())
     print(book.author.name, author.books)
+
+    Author.create_table()
+    Book.create_table()
+
+    Author.delete_table()
+    Book.delete_table()
