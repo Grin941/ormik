@@ -12,12 +12,13 @@ class FieldSQL:
 
     SQL_TYPES_MAPPING = {
         str: 'CHAR',
-        int: 'INT',
+        int: 'INTEGER',
         bool: 'BOOL',
     }
 
     def _generate_field_sql(self, field):
         field_type = int if not hasattr(field, 'ty') else field.ty
+        field_is_autoincremented = isinstance(field, AutoField)
         sql = f'{field.name} {self.SQL_TYPES_MAPPING[field_type]}'
 
         if hasattr(field, 'max_length'):
@@ -26,13 +27,13 @@ class FieldSQL:
         if field.is_primary_key:
             sql += f' PRIMARY KEY'
 
-        if field.is_nullable:
+        if field.is_nullable and not field_is_autoincremented:
             sql += f' NOT NULL'
 
         if field.default_value is not None:
             sql += f' DEFAULT {field.default_value}'
 
-        if isinstance(field, AutoField):
+        if field_is_autoincremented:
             sql += f' AUTOINCREMENT'
 
         return sql
@@ -267,7 +268,9 @@ class SqlStatementsQueue(queue.PriorityQueue):
 
 class QuerySet:
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, db, *args, **kwargs):
+        self.db = db
+        self.query = ''
         self._reset()
 
     def append_statement(self, sql_statement):
@@ -290,13 +293,13 @@ class QuerySet:
     def add_table_alias_to_select(self, alias, fk_key):
         self.models_fields_to_select[fk_key] = (alias, [])
 
-    @property
-    def query(self):
-        query = ''.join(self.sql_statements_queue.values)
-        return f'{query};'
-
     def execute(self, *args, **kwargs):
+        c = self.db.connection.cursor()
+        self.query = f"{''.join(self.sql_statements_queue.values)};"
         print(self.query)
+        c.execute(self.query)
+        print(c.fetchone())
+        self.db.connection.commit()
         self._reset()
 
 
@@ -314,9 +317,8 @@ FIELD_LOOKUP_MAPPING = {
 class QueryManager:
 
     def __init__(self, db, model):
-        self.db = db
         self.model = model
-        self.queryset = QuerySet()
+        self.queryset = QuerySet(db)
 
     def _populate_models_fields_to_select(self, *args, **kwargs):
         tables_counter = 0
@@ -431,7 +433,6 @@ class QueryManager:
         self.queryset.append_statement(sql)
 
     def filter(self, *args, **kwargs):
-        # self._populate_models_fields_to_select(*args)
         if not self.queryset.priority_statement_in_use:
             self._select(*args, **kwargs)
 
@@ -520,8 +521,7 @@ class Model(metaclass=ModelMeta):
 class SqliteDatabase:
 
     def __init__(self, database):
-        # self.connection = self._connect(database)
-        self.connection = None
+        self.connection = self._connect(database)
 
     def _connect(self, database):
         conn = sqlite3.connect(
@@ -561,22 +561,24 @@ if __name__ == '__main__':
     db = SqliteDatabase('tmp.db')
     db.register_models([Author, Book])
 
-    author = Author(name='William Gibson')
-    book = Book(author=author, title='Title', pages=100)
+    # author = Author(name='William Gibson')
+    # book = Book(author=author, title='Title', pages=100)
 
     Author.create_table()
     Book.create_table()
 
-    books = Book.values_list('title', 'pages', 'author__name')
-    books = Book.filter(
-        title='Title', author__name__contains='William Gibson', pages__gt=10
-    )
+    # book = Book.create(author=author, title='New', pages=80)
+    # updated_rows_num = Book.filter(pages=80).update(
+    #     pages=100000, title='LOL!', author=author
+    # )
 
-    book = Book.create(author=author, title='New', pages=80)
-    updated_rows_num = Book.filter(pages=80).update(
-        pages=100000, title='LOL!', author=author
-    )
-    deleted_rows_count = Book.filter(pages=10000).delete()
+    # books = Book.values_list('title', 'pages', 'author__name')
+    # books = Book.filter(
+    #     title='LOL!', author__name__contains='William Gibson', pages__gt=10
+    # )
 
-    Author.drop_table()
-    Book.drop_table()
+    # # TODO: FK in delete!
+    # deleted_rows_count = Book.filter(pages=10000).delete()
+
+    # Author.drop_table()
+    # Book.drop_table()
