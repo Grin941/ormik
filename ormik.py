@@ -244,12 +244,17 @@ class SqlStatementsQueue(queue.PriorityQueue):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.priority_statement_in_use = False
+        self.priorities_in_use = set()
 
     def append(self, statement):
         sql_statement, statement_alias = statement
         statement_priority = self.STATEMENT_ALIAS_PRIORITY[statement_alias]
         if statement_priority == 1:
             self.priority_statement_in_use = True
+            if statement_priority in self.priorities_in_use:
+                # Swap priority statements
+                self.queue.pop(0)
+        self.priorities_in_use.add(statement_priority)
         self.put((statement_priority, sql_statement))
 
     @property
@@ -378,7 +383,9 @@ class QueryManager:
         return self.queryset.execute()
 
     def delete(self):
-        sql = f'DELETE FROM {self.model._table} '
+        primary_table_alias = \
+            self.queryset.models_fields_to_select[PRIMARY_MODEL_KEY][0]
+        sql = f'DELETE FROM {self.model._table} AS {primary_table_alias}'
         self.queryset.append_statement(sql)
 
         return self.queryset.execute()
@@ -554,22 +561,22 @@ if __name__ == '__main__':
     db = SqliteDatabase('tmp.db')
     db.register_models([Author, Book])
 
-    # author = Author(name='William Gibson')
-    # book = Book(author=author, title='Title', pages=100)
+    author = Author(name='William Gibson')
+    book = Book(author=author, title='Title', pages=100)
 
-    # Author.create_table()
-    # Book.create_table()
+    Author.create_table()
+    Book.create_table()
 
-    # books = Book.values_list('title', 'pages', 'author__name')
-    # books = Book.filter(
-    #     title='Title', author__name__contains='William Gibson', pages__gt=10
-    # )
+    books = Book.values_list('title', 'pages', 'author__name')
+    books = Book.filter(
+        title='Title', author__name__contains='William Gibson', pages__gt=10
+    )
 
-    # book = Book.create(author=author, title='New', pages=80)
-    # updated_rows_num = Book.filter(pages=80).update(
-    #     pages=100000, title='LOL!', author=author
-    # )
+    book = Book.create(author=author, title='New', pages=80)
+    updated_rows_num = Book.filter(pages=80).update(
+        pages=100000, title='LOL!', author=author
+    )
     deleted_rows_count = Book.filter(pages=10000).delete()
 
-    # Author.drop_table()
-    # Book.drop_table()
+    Author.drop_table()
+    Book.drop_table()
