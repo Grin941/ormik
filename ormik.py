@@ -1,4 +1,5 @@
 import sqlite3
+import queue
 
 
 CASCADE = 'CASCADE'
@@ -30,6 +31,9 @@ class FieldSQL:
 
         if field.default_value is not None:
             sql += f' DEFAULT {field.default_value}'
+
+        if isinstance(field, AutoField):
+            sql += f' AUTOINCREMENT'
 
         return sql
 
@@ -133,8 +137,7 @@ class ReversedForeignKeyField(Field):
 
     def __get__(self, instance, instance_type=None):
         if instance is not None:
-            # return self.origin_model.select().where(self.field_name=instance)
-            return
+            return self.origin_model.filter(**{self.field_name: instance})
         return self
 
 
@@ -218,26 +221,65 @@ class ModelMeta(type):
         """
         if hasattr(cls.query_manager, attr):
             def wrapper(*args, **kwargs):
-                return getattr(cls.query_manager, attr)(*args, **kwargs)()
+                return getattr(cls.query_manager, attr)(*args, **kwargs)
             return wrapper
         raise AttributeError(attr)
+
+
+PRIMARY_MODEL_KEY = 'PRIMARYMODELKEY'
+
+
+class SqlStatementsQueue(queue.PriorityQueue):
+
+    STATEMENT_ALIAS_PRIORITY = {
+        'SELECT': 1,
+        'UPDATE': 1,
+        'INSERT': 1,
+        'DELETE': 1,
+        'CREATE': 1,
+        'DROP': 1,
+        'WHERE': 2,
+    }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.priority_statement_in_use = False
+
+    def append(self, statement):
+        sql_statement, statement_alias = statement
+        statement_priority = self.STATEMENT_ALIAS_PRIORITY[statement_alias]
+        if statement_priority == 1:
+            self.priority_statement_in_use = True
+        self.put((statement_priority, sql_statement))
+
+    @property
+    def values(self):
+        values = []
+        while not self.empty():
+            values.append(self.queue.pop(0)[1])
+        return values
 
 
 class QuerySet:
 
     def __init__(self, *args, **kwargs):
-        self.reset()
+        self._reset()
 
     def append_statement(self, sql_statement):
-        self.sql_list.append(sql_statement)
+        statement_alias = sql_statement.split(None, 1)[0].strip()
+        self.sql_statements_queue.append((sql_statement, statement_alias))
 
-    def reset(self):
-        self.sql_list = []
+    def _reset(self):
+        self.sql_statements_queue = SqlStatementsQueue()
         self.models_fields_to_select = {
-            '__no__': ('t0', [])
+            PRIMARY_MODEL_KEY: ('t0', [])
         }
 
-    def add_field_to_select(self, field, fk_key='__no__'):
+    @property
+    def priority_statement_in_use(self):
+        return self.sql_statements_queue.priority_statement_in_use
+
+    def add_field_to_select(self, field, fk_key=PRIMARY_MODEL_KEY):
         self.models_fields_to_select[fk_key][1].append(field)
 
     def add_table_alias_to_select(self, alias, fk_key):
@@ -245,12 +287,23 @@ class QuerySet:
 
     @property
     def query(self):
-        query = ''.join(self.sql_list)
+        query = ''.join(self.sql_statements_queue.values)
         return f'{query};'
 
-    def __call__(self, *args, **kwargs):
+    def execute(self, *args, **kwargs):
         print(self.query)
-        self.reset()
+        self._reset()
+
+
+FIELD_LOOKUP_MAPPING = {
+    'exact': '=',
+    'gt': '>',
+    'gte': '>=',
+    'lt': '<',
+    'lte': '<=',
+    'contains': 'LIKE',
+    'in': 'IN',
+}
 
 
 class QueryManager:
@@ -263,10 +316,13 @@ class QueryManager:
     def _populate_models_fields_to_select(self, *args, **kwargs):
         tables_counter = 0
         if not args:
-            self.queryset.add_field_to_select('*')
+            args = [f'{PRIMARY_MODEL_KEY}__*']
+            for field_name, field in self.model._fields.items():
+                if isinstance(field, ForeignKeyField):
+                    args.append(f'{field_name}__*')
 
         for field in args:
-            fk, field_name = '__no__', field
+            fk, field_name = PRIMARY_MODEL_KEY, field
             if '__' in field:
                 fk, field_name = field.split('__')
 
@@ -285,6 +341,7 @@ class QueryManager:
         inst = self.model(**kwargs)
         columns, values = [], []
         for field_name, field in inst.fields.items():
+            if isinstance(field, AutoField): continue
             field_value = getattr(inst, field_name)
             if isinstance(field, ForeignKeyField):
                 field_value = field_value.id
@@ -298,7 +355,7 @@ class QueryManager:
         )
         self.queryset.append_statement(sql)
 
-        return self.queryset
+        return self.queryset.execute()
 
     def update(self, *args, **kwargs):
         update_statements = []
@@ -318,15 +375,20 @@ class QueryManager:
         )
         self.queryset.append_statement(sql)
 
-        return self.queryset
+        return self.queryset.execute()
 
     def delete(self):
-        sql = f'DELETE FROM {self.model._table}'
+        sql = f'DELETE FROM {self.model._table} '
         self.queryset.append_statement(sql)
 
-        return self.queryset
+        return self.queryset.execute()
 
-    def select(self, *args, **kwargs):
+    def values_list(self, *args, **kwargs):
+        self._select(*args)
+
+        return self.queryset.execute()
+
+    def _select(self, *args, **kwargs):
         self._populate_models_fields_to_select(*args)
 
         sql_fields_statement = []
@@ -361,11 +423,49 @@ class QueryManager:
         )
         self.queryset.append_statement(sql)
 
-        return self.queryset
+    def filter(self, *args, **kwargs):
+        # self._populate_models_fields_to_select(*args)
+        if not self.queryset.priority_statement_in_use:
+            self._select(*args, **kwargs)
 
-    def where(self, *args, **kwargs):
-        for k, v in kwargs:
-            print(k, v)
+        where_statement_clauses = []
+        for field_lookup, lookup_value in kwargs.items():
+            field_lookup_bricks = field_lookup.split('__')
+            if field_lookup_bricks[-1] not in FIELD_LOOKUP_MAPPING:
+                field_lookup_bricks.append('exact')
+            field = field_lookup_bricks.pop(0)
+
+            # Get field = {table_alias}.{field_name}
+            if len(field_lookup_bricks) > 1:
+                # Field is FK
+                fk_table_alias = \
+                    self.queryset.models_fields_to_select[field][0]
+                fk_table_field = field_lookup_bricks.pop(0)
+                field = f'{fk_table_alias}.{fk_table_field}'
+            else:
+                primary_table_alias = \
+                    self.queryset.models_fields_to_select[PRIMARY_MODEL_KEY][0]
+                field = f'{primary_table_alias}.{field}'
+
+            # Get value with regard to lookup statement
+            lookup_statement = FIELD_LOOKUP_MAPPING[field_lookup_bricks.pop()]
+            if lookup_statement == 'LIKE':
+                lookup_value = f"'%{lookup_value}%'"
+            elif lookup_statement == 'IN':
+                lookup_value = f'{tuple(lookup_value)}'
+            else:
+                if isinstance(lookup_value, str):
+                    lookup_value = f"'{lookup_value}'"
+
+            where_statement_clauses.append(
+                f'{field} {lookup_statement} {lookup_value}'
+            )
+
+        where_statement_clauses = ' AND '.join(where_statement_clauses)
+        sql = f' WHERE {where_statement_clauses}'
+        self.queryset.append_statement(sql)
+
+        return self
 
     def create_table(self, *args, **kwargs):
         fields_declaration = ', '.join([
@@ -378,14 +478,16 @@ class QueryManager:
             f')'
         )
         self.queryset.append_statement(sql)
+        self.queryset.execute()
 
-        return self.queryset
+        return True
 
     def drop_table(self, *args, **kwargs):
         sql = f'DROP TABLE {self.model._table}'
         self.queryset.append_statement(sql)
+        self.queryset.execute()
 
-        return self.queryset
+        return True
 
 
 class Model(metaclass=ModelMeta):
@@ -452,23 +554,22 @@ if __name__ == '__main__':
     db = SqliteDatabase('tmp.db')
     db.register_models([Author, Book])
 
-    author = Author(name='William Gibson')
-    book = Book(author=author, title='Title', pages=100)
+    # author = Author(name='William Gibson')
+    # book = Book(author=author, title='Title', pages=100)
 
-    print(author._table, author._fields.keys())
-    print(book.author.name, author.books)
+    # Author.create_table()
+    # Book.create_table()
 
-    Author.create_table()
-    Book.create_table()
+    # books = Book.values_list('title', 'pages', 'author__name')
+    # books = Book.filter(
+    #     title='Title', author__name__contains='William Gibson', pages__gt=10
+    # )
 
-    Book.select('title', 'pages', 'author__name')
+    # book = Book.create(author=author, title='New', pages=80)
+    # updated_rows_num = Book.filter(pages=80).update(
+    #     pages=100000, title='LOL!', author=author
+    # )
+    deleted_rows_count = Book.filter(pages=10000).delete()
 
-    import pdb; pdb.set_trace()
-    Book.select().where(title='Title')
-
-    Book.create(author=author, title='New', pages=80)
-    Book.update(pages=100000, title='LOL!', author=author)
-    Book.delete().where(pages=10000)
-
-    Author.drop_table()
-    Book.drop_table()
+    # Author.drop_table()
+    # Book.drop_table()
