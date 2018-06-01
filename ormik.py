@@ -195,11 +195,13 @@ class ModelMeta(type):
             isinstance(attr, Field)
         }
         model_cls._table = clsdict.get('__tablename__', name.lower())
+        model_cls._pk = None
 
         pk_count = 0
         for model_field_name, model_field in model_cls._fields.items():
             model_field.name = model_field_name
             if model_field.is_primary_key:
+                model_cls._pk = model_field
                 pk_count += 1
 
             # Create reverse_attr for FK model
@@ -303,11 +305,10 @@ class QueryManager:
         for field_name, field_value in kwargs.items():
             if isinstance(field_value, Model):
                 field_value = field_value.id
-
             if isinstance(field_value, str):
-                update_statement = f"{field_name} = '{field_value}'"
-            else:
-                update_statement = f"{field_name} = {field_value}"
+                field_value = f"'{field_value}'"
+
+            update_statement = f"{field_name} = {field_value}"
             update_statements.append(update_statement)
         update_statements = ', '.join(update_statements)
 
@@ -341,7 +342,8 @@ class QueryManager:
             if isinstance(field, ForeignKeyField):
                 sql_from_statement[field.name] = (
                     f'LEFT JOIN {field.rel_model._table} AS {table_alias} '
-                    f'ON t0.{field.name} = {table_alias}.id'
+                    f'ON t0.{field.name} = '
+                    f'{table_alias}.{field.rel_model._pk.name}'
                 )
             else:
                 sql_from_statement[field] = f'{table_name} AS {table_alias}'
@@ -362,7 +364,8 @@ class QueryManager:
         return self.queryset
 
     def where(self, *args, **kwargs):
-        pass
+        for k, v in kwargs:
+            print(k, v)
 
     def create_table(self, *args, **kwargs):
         fields_declaration = ', '.join([
@@ -458,14 +461,14 @@ if __name__ == '__main__':
     Author.create_table()
     Book.create_table()
 
-    Author.drop_table()
-    Book.drop_table()
-
     Book.select('title', 'pages', 'author__name')
-    Book.select()
 
-    # TODO: author.id is defined as None
-    # TODO: each model should have pk -> Primary Key
+    import pdb; pdb.set_trace()
+    Book.select().where(title='Title')
+
     Book.create(author=author, title='New', pages=80)
     Book.update(pages=100000, title='LOL!', author=author)
-    Book.delete()
+    Book.delete().where(pages=10000)
+
+    Author.drop_table()
+    Book.drop_table()
