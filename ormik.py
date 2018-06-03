@@ -11,9 +11,9 @@ NO_ACTION = 'NO ACTION'
 class FieldSQL:
 
     SQL_TYPES_MAPPING = {
-        str: 'CHAR',
+        str: 'VARCHAR',
         int: 'INTEGER',
-        bool: 'BOOL',
+        bool: 'BOOLEAN',
     }
 
     def _generate_field_sql(self, field):
@@ -38,6 +38,15 @@ class FieldSQL:
 
         return sql
 
+    def __set__(self, field, value):
+        self.field = field
+
+    def __get__(self, field, field_type=None):
+        return self._generate_field_sql(field)
+
+
+class TableConstraintsSQL:
+
     def _generate_fk_constraints(self, field):
         return (
             f' FOREIGN KEY ({field.name})'
@@ -49,16 +58,14 @@ class FieldSQL:
         self.field = field
 
     def __get__(self, field, field_type=None):
-        return (
-            f'{self._generate_field_sql(field)},'
-            f'{self._generate_fk_constraints(field)}'
-        ) if isinstance(field, ForeignKeyField) else \
-            f'{self._generate_field_sql(field)}'
+        if isinstance(field, ForeignKeyField):
+            return self._generate_fk_constraints(field)
 
 
 class Field:
 
-    sql = FieldSQL()
+    column_definition_sql = FieldSQL()
+    table_constraints_sql = TableConstraintsSQL()
 
     def __init__(
         self,
@@ -266,7 +273,31 @@ class SqlStatementsQueue(queue.PriorityQueue):
         return values
 
 
+class QuerySQL:
+
+    FIELD_LOOKUP_MAPPING = {
+        'exact': '=',
+        'gt': '>',
+        'gte': '>=',
+        'lt': '<',
+        'lte': '<=',
+        'contains': 'LIKE',
+        'in': 'IN',
+    }
+
+    def __init__(self, *args, **kwargs):
+        self.where_statement = {}
+
+    def __set__(self, instance, value):
+        pass
+
+    def __get__(self, instance, instance_type=None):
+        pass
+
+
 class QuerySet:
+
+    _query = QuerySQL()
 
     def __init__(self, db, *args, **kwargs):
         self.db = db
@@ -278,6 +309,7 @@ class QuerySet:
         self.sql_statements_queue.append((sql_statement, statement_alias))
 
     def _reset(self):
+        self.query_sql = QuerySQL()
         self.sql_statements_queue = SqlStatementsQueue()
         self.models_fields_to_select = {
             PRIMARY_MODEL_KEY: ('t0', [])
@@ -432,6 +464,8 @@ class QueryManager:
         )
         self.queryset.append_statement(sql)
 
+    def _filter(self, *args, **kwargs):
+
     def filter(self, *args, **kwargs):
         if not self.queryset.priority_statement_in_use:
             self._select(*args, **kwargs)
@@ -476,13 +510,24 @@ class QueryManager:
         return self
 
     def create_table(self, *args, **kwargs):
-        fields_declaration = ', '.join([
-            field.sql for field in self.model._fields.values()
-        ])
+        columns_definition_list, table_constraints_list = [], []
+        for field in self.model._fields.values():
+            columns_definition_list.append(
+                field.column_definition_sql
+            )
+            table_constraints = field.table_constraints_sql
+            if table_constraints is not None:
+                table_constraints_list.append(table_constraints)
+
+        columns_definition_sql = ', '.join(columns_definition_list)
+        table_constraints_sql = ', '.join(table_constraints_list)
+        if table_constraints_sql:
+            columns_definition_sql = f'{columns_definition_sql},'
 
         sql = (
             f'CREATE TABLE IF NOT EXISTS {self.model._table} ('
-            f'{fields_declaration}'
+            f'{columns_definition_sql}'
+            f'{table_constraints_sql}'
             f')'
         )
         self.queryset.append_statement(sql)
@@ -580,5 +625,5 @@ if __name__ == '__main__':
     # # TODO: FK in delete!
     # deleted_rows_count = Book.filter(pages=10000).delete()
 
-    # Author.drop_table()
-    # Book.drop_table()
+    Author.drop_table()
+    Book.drop_table()
