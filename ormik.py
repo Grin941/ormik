@@ -1,5 +1,7 @@
 import sqlite3
 import queue
+import functools
+import collections
 
 
 CASCADE = 'CASCADE'
@@ -227,9 +229,10 @@ class ModelMeta(type):
         """ Make query upon Model class.
         Example: Model.create_table()
         """
-        if hasattr(cls.query_manager, attr):
+        qs = cls.query_manager.get_queryset()
+        if hasattr(qs, attr):
             def wrapper(*args, **kwargs):
-                return getattr(cls.query_manager, attr)(*args, **kwargs)
+                return getattr(qs, attr)(*args, **kwargs)
             return wrapper
         raise AttributeError(attr)
 
@@ -273,66 +276,8 @@ class SqlStatementsQueue(queue.PriorityQueue):
         return values
 
 
-class QuerySQL:
-
-    FIELD_LOOKUP_MAPPING = {
-        'exact': '=',
-        'gt': '>',
-        'gte': '>=',
-        'lt': '<',
-        'lte': '<=',
-        'contains': 'LIKE',
-        'in': 'IN',
-    }
-
-    def __init__(self, *args, **kwargs):
-        self.where_statement = {}
-
-    def __set__(self, instance, value):
-        pass
-
-    def __get__(self, instance, instance_type=None):
-        pass
-
-
-class QuerySet:
-
-    _query = QuerySQL()
-
-    def __init__(self, db, *args, **kwargs):
-        self.db = db
-        self.query = ''
-        self._reset()
-
-    def append_statement(self, sql_statement):
-        statement_alias = sql_statement.split(None, 1)[0].strip()
-        self.sql_statements_queue.append((sql_statement, statement_alias))
-
-    def _reset(self):
-        self.query_sql = QuerySQL()
-        self.sql_statements_queue = SqlStatementsQueue()
-        self.models_fields_to_select = {
-            PRIMARY_MODEL_KEY: ('t0', [])
-        }
-
-    @property
-    def priority_statement_in_use(self):
-        return self.sql_statements_queue.priority_statement_in_use
-
-    def add_field_to_select(self, field, fk_key=PRIMARY_MODEL_KEY):
-        self.models_fields_to_select[fk_key][1].append(field)
-
-    def add_table_alias_to_select(self, alias, fk_key):
-        self.models_fields_to_select[fk_key] = (alias, [])
-
-    def execute(self, *args, **kwargs):
-        c = self.db.connection.cursor()
-        self.query = f"{''.join(self.sql_statements_queue.values)};"
-        print(self.query)
-        c.execute(self.query)
-        print(c.fetchone())
-        self.db.connection.commit()
-        self._reset()
+SQL_TEMPLATES = {
+}
 
 
 FIELD_LOOKUP_MAPPING = {
@@ -346,17 +291,112 @@ FIELD_LOOKUP_MAPPING = {
 }
 
 
-class QueryManager:
+class QuerySQL:
 
-    def __init__(self, db, model):
-        self.model = model
-        self.queryset = QuerySet(db)
+    FIELD_LOOKUP_MAPPING = {
+        'exact': '=',
+        'gt': '>',
+        'gte': '>=',
+        'lt': '<',
+        'lte': '<=',
+        'contains': 'LIKE',
+        'in': 'IN',
+    }
+
+    def __set__(self, queryset, value):
+        self.qs = queryset
+
+    def __get__(self, queryset, queryset_type=None):
+        return '123'
+
+
+def fill_query_statement(method):
+    functools.wraps(method)
+
+    # def _fill_query_fks(fields, lookups, fks=None):
+    #     if fks is None: fks = set()
+
+    #     for field in list(fields) + list(lookups.keys()):
+    #         if '__' in field:
+    #             fk = field.split('__')[0]
+    #             fks.add(fk)
+
+    #     print('FKS', fks, list(fields) + list(lookups.keys()))
+    #     return fks
+
+    def wrapper(queryset, *args, **kwargs):
+        statement_alias = method.__name__
+        query_statement_dict = queryset.query_statements
+        if statement_alias not in query_statement_dict:
+            query_statement_dict[statement_alias] = {
+                'fields': [arg for arg in args],
+                'lookups': kwargs,
+                # 'fks': _fill_query_fks(args, kwargs)
+            }
+        else:
+            statements = query_statement_dict[statement_alias]
+            statements['fields'].extend(list(args))
+            statements['lookups'].update(kwargs)
+            # statements['fks'] = _fill_query_fks(
+            #     args, kwargs, statements['fks']
+            # )
+
+        return method(queryset, *args, **kwargs)
+    return wrapper
+
+
+def sql_generator_methods(cls):
+    for name, val in vars(cls).items():
+        if callable(val) and not name.startswith('_'):
+            setattr(cls, name, fill_query_statement(val))
+    return cls
+
+
+class QuerySetMeta(type):
+
+    def __new__(mtcls, name, bases, clsdict):
+
+        qs_cls = super().__new__(mtcls, name, bases, clsdict)
+        qs_cls = sql_generator_methods(qs_cls)
+
+        return qs_cls
+
+
+class QuerySet(metaclass=QuerySetMeta):
+
+    query = QuerySQL()
+
+    def __init__(self, query_manager, *args, **kwargs):
+        self.query_manager = query_manager
+        self.query_statements = collections.OrderedDict()
+        self.db = self.query_manager.db
+        self._reset()
+
+    def _append_statement(self, sql_statement):
+        statement_alias = sql_statement.split(None, 1)[0].strip()
+        self.sql_statements_queue.append((sql_statement, statement_alias))
+
+    def _reset(self):
+        self.sql_statements_queue = SqlStatementsQueue()
+        self.models_fields_to_select = {
+            PRIMARY_MODEL_KEY: ('t0', [])
+        }
+
+    @property
+    def priority_statement_in_use(self):
+        return self.sql_statements_queue.priority_statement_in_use
+
+    def _add_field_to_select(self, field, fk_key=PRIMARY_MODEL_KEY):
+        self.models_fields_to_select[fk_key][1].append(field)
+
+    def _add_table_alias_to_select(self, alias, fk_key):
+        self.models_fields_to_select[fk_key] = (alias, [])
 
     def _populate_models_fields_to_select(self, *args, **kwargs):
         tables_counter = 0
         if not args:
             args = [f'{PRIMARY_MODEL_KEY}__*']
-            for field_name, field in self.model._fields.items():
+            for field_name, field in self.query_manager.model._fields.items():
                 if isinstance(field, ForeignKeyField):
                     args.append(f'{field_name}__*')
 
@@ -365,16 +405,13 @@ class QueryManager:
             if '__' in field:
                 fk, field_name = field.split('__')
 
-            if fk not in self.queryset.models_fields_to_select:
+            if fk not in self.models_fields_to_select:
                 tables_counter += 1
-                self.queryset.add_table_alias_to_select(
+                self._add_table_alias_to_select(
                     f't{tables_counter}', fk_key=fk
                 )
 
-            self.queryset.add_field_to_select(field_name, fk_key=fk)
-
-    def __get__(self, model, model_type=None):
-        return self
+            self._add_field_to_select(field_name, fk_key=fk)
 
     def create(self, *args, **kwargs):
         inst = self.model(**kwargs)
@@ -392,7 +429,7 @@ class QueryManager:
             f'INSERT INTO {self.model._table} {tuple(columns)} '
             f'VALUES {tuple(values)}'
         )
-        self.queryset.append_statement(sql)
+        self.queryset._append_statement(sql)
 
         return self.queryset.execute()
 
@@ -412,7 +449,7 @@ class QueryManager:
             f'UPDATE {self.model._table} '
             f'SET {update_statements}'
         )
-        self.queryset.append_statement(sql)
+        self.queryset._append_statement(sql)
 
         return self.queryset.execute()
 
@@ -420,14 +457,14 @@ class QueryManager:
         primary_table_alias = \
             self.queryset.models_fields_to_select[PRIMARY_MODEL_KEY][0]
         sql = f'DELETE FROM {self.model._table} AS {primary_table_alias}'
-        self.queryset.append_statement(sql)
+        self.queryset._append_statement(sql)
 
         return self.queryset.execute()
 
     def values_list(self, *args, **kwargs):
         self._select(*args)
 
-        return self.queryset.execute()
+        return self._execute()
 
     def _select(self, *args, **kwargs):
         self._populate_models_fields_to_select(*args)
@@ -436,11 +473,11 @@ class QueryManager:
         sql_from_statement = {}
         for fk, (
             table_alias, table_fields_list
-        ) in self.queryset.models_fields_to_select.items():
+        ) in self.models_fields_to_select.items():
             # Fill FROM tables
             table_name, field = (
-                self.model._table,
-                self.model._fields.get(fk, fk)
+                self.query_manager.model._table,
+                self.query_manager.model._fields.get(fk, fk)
             )
             if isinstance(field, ForeignKeyField):
                 sql_from_statement[field.name] = (
@@ -462,12 +499,10 @@ class QueryManager:
             f'SELECT {sql_fields_statement} '
             f'FROM {sql_from_statement}'
         )
-        self.queryset.append_statement(sql)
-
-    def _filter(self, *args, **kwargs):
+        self._append_statement(sql)
 
     def filter(self, *args, **kwargs):
-        if not self.queryset.priority_statement_in_use:
+        if not self.priority_statement_in_use:
             self._select(*args, **kwargs)
 
         where_statement_clauses = []
@@ -481,12 +516,12 @@ class QueryManager:
             if len(field_lookup_bricks) > 1:
                 # Field is FK
                 fk_table_alias = \
-                    self.queryset.models_fields_to_select[field][0]
+                    self.models_fields_to_select[field][0]
                 fk_table_field = field_lookup_bricks.pop(0)
                 field = f'{fk_table_alias}.{fk_table_field}'
             else:
                 primary_table_alias = \
-                    self.queryset.models_fields_to_select[PRIMARY_MODEL_KEY][0]
+                    self.models_fields_to_select[PRIMARY_MODEL_KEY][0]
                 field = f'{primary_table_alias}.{field}'
 
             # Get value with regard to lookup statement
@@ -505,13 +540,14 @@ class QueryManager:
 
         where_statement_clauses = ' AND '.join(where_statement_clauses)
         sql = f' WHERE {where_statement_clauses}'
-        self.queryset.append_statement(sql)
+        self._append_statement(sql)
 
+        # return self._execute()
         return self
 
     def create_table(self, *args, **kwargs):
         columns_definition_list, table_constraints_list = [], []
-        for field in self.model._fields.values():
+        for field in self.query_manager.model._fields.values():
             columns_definition_list.append(
                 field.column_definition_sql
             )
@@ -525,22 +561,42 @@ class QueryManager:
             columns_definition_sql = f'{columns_definition_sql},'
 
         sql = (
-            f'CREATE TABLE IF NOT EXISTS {self.model._table} ('
+            f'CREATE TABLE IF NOT EXISTS {self.query_manager.model._table} ('
             f'{columns_definition_sql}'
             f'{table_constraints_sql}'
             f')'
         )
-        self.queryset.append_statement(sql)
-        self.queryset.execute()
+        self._append_statement(sql)
+        self._execute()
 
         return True
 
     def drop_table(self, *args, **kwargs):
-        sql = f'DROP TABLE {self.model._table}'
-        self.queryset.append_statement(sql)
-        self.queryset.execute()
+        sql = f'DROP TABLE {self.query_manager.model._table}'
+        self._append_statement(sql)
+        self._execute()
 
         return True
+
+    def _execute(self, *args, **kwargs):
+        c = self.db.connection.cursor()
+        self.query = f"{''.join(self.sql_statements_queue.values)};"
+        # print(self.query)
+        # c.execute(self.query)
+        # print(c.fetchone())
+        print(id(self))
+        print(self.query_statements)
+        self.db.connection.commit()
+        self._reset()
+
+
+class QueryManager:
+
+    def __init__(self, db, model):
+        self.db, self.model = db, model
+
+    def get_queryset(self):
+        return QuerySet(self)
 
 
 class Model(metaclass=ModelMeta):
@@ -602,6 +658,8 @@ if __name__ == '__main__':
         author = ForeignKeyField(Author, 'books')
         title = CharField()
         pages = IntegerField()
+        coauthor = ForeignKeyField(Author, 'cobooks')
+        rating = IntegerField()
 
     db = SqliteDatabase('tmp.db')
     db.register_models([Author, Book])
@@ -609,8 +667,8 @@ if __name__ == '__main__':
     # author = Author(name='William Gibson')
     # book = Book(author=author, title='Title', pages=100)
 
-    Author.create_table()
-    Book.create_table()
+    # Author.create_table()
+    # Book.create_table()
 
     # book = Book.create(author=author, title='New', pages=80)
     # updated_rows_num = Book.filter(pages=80).update(
@@ -618,12 +676,12 @@ if __name__ == '__main__':
     # )
 
     # books = Book.values_list('title', 'pages', 'author__name')
-    # books = Book.filter(
-    #     title='LOL!', author__name__contains='William Gibson', pages__gt=10
-    # )
+    Book.filter(
+        title='LOL!', author__name__contains='William Gibson', pages__gt=10
+    ).values_list('coauthor__name', 'rating')
 
     # # TODO: FK in delete!
     # deleted_rows_count = Book.filter(pages=10000).delete()
 
-    Author.drop_table()
-    Book.drop_table()
+    # Author.drop_table()
+    # Book.drop_table()
