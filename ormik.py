@@ -617,13 +617,14 @@ class Model(metaclass=ModelMeta):
             setattr(self, field_name, field_value)
 
     def __repr__(self):
-        a = ', '.join(
-            [f'{field_name}={getattr(self, field_name)}' for field_name in self.fields.keys()]
+        fields_repr = ', '.join(
+            [
+                f'{field_name}={getattr(self, field_name)}'
+                for field_name in self.fields.keys()
+            ]
         )
         return (
-            f'{self.__class__.__name__}('
-            f'{a}'
-            f')'
+            f'{self.__class__.__name__}({fields_repr}))'
         )
 
 
