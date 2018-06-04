@@ -306,37 +306,12 @@ class QuerySQL:
 
     @property
     def select_stmt(self):
-        select_fields = self.query_statements['SELECT']['fields']
-        sql_fields_statement = ', '.join(
-            select_fields
-        ) if select_fields else ', '.join(
-            [f'{alias}.*' for alias in self.fk_joins.values()]
-        )
-        sql_from_statement = (
-            f'{self.model._table} '
-            f'AS {self.fk_joins.pop(self.PRIMARY_MODEL_KEY)}'
-        )
-        for field, table_alias in self.fk_joins.items():
-            sql_from_statement += (
-                f' LEFT JOIN {self.model._fields[field].rel_model._table} '
-                f'AS {table_alias} '
-                f'ON t0.{field} = '
-                f'{table_alias}.{self.model._fields[field].rel_model._pk.name}'
-            )
-        sql_where_statement = []
-        for field, (
-            lookup_statement, lookup_value
-        ) in self.query_statements['WHERE']['lookups'].items():
-            lookup_value = self._normalize_lookup_value(
-                lookup_statement, lookup_value
-            )
-            sql_where_statement.append(
-                f'{field} {lookup_statement} {lookup_value}'
-            )
-        sql_where_statement = ' AND '.join(sql_where_statement)
+        sql_select_statement = self._sql_select_statement()
+        sql_from_statement = self._sql_from_statement()
+        sql_where_statement = self._sql_where_statement()
 
         return (
-            f'SELECT {sql_fields_statement} '
+            f'SELECT {sql_select_statement} '
             f'FROM {sql_from_statement} '
             f'WHERE {sql_where_statement}'
         )
@@ -348,18 +323,9 @@ class QuerySQL:
                 f'{self.model._pk.name} IN ({self.select_stmt})'
             )
         else:
-            sql_where_statement = []
-            for field, (
-                lookup_statement, lookup_value
-            ) in self.query_statements['WHERE']['lookups'].items():
-                table_alias, field_name = field.split('.')
-                lookup_value = self._normalize_lookup_value(
-                    lookup_statement, lookup_value
-                )
-                sql_where_statement.append(
-                    f'{field_name} {lookup_statement} {lookup_value}'
-                )
-            sql_where_statement = ' AND '.join(sql_where_statement)
+            sql_where_statement = self._sql_where_statement(
+                split_table_alias=True
+            )
 
         return (
             f'DELETE FROM {self.model._table} '
@@ -372,6 +338,20 @@ class QuerySQL:
             raise ValueError(
                 'QuerySet can only update columns in the model’s main table'
             )
+        sql_update_statement = self._sql_update_statement()
+        sql_where_statement = self._sql_where_statement(split_table_alias=True)
+
+        sql = (
+            f'UPDATE {self.model._table} '
+            f'SET {sql_update_statement}'
+        )
+
+        if sql_where_statement:
+            sql += f' WHERE {sql_where_statement}'
+
+        return sql
+
+    def _sql_update_statement(self):
         sql_update_statement = []
         for field, (
             _, value
@@ -379,31 +359,30 @@ class QuerySQL:
             table_alias, field_name = field.split('.')
             value = self._normalize_update_value(value)
             sql_update_statement.append(f'{field_name} = {value}')
-        sql_update_statement = ', '.join(sql_update_statement)
+        return ', '.join(sql_update_statement)
 
-        sql = (
-            f'UPDATE {self.model._table} '
-            f'SET {sql_update_statement}'
+    def _sql_select_statement(self):
+        select_fields = self.query_statements['SELECT']['fields']
+        sql_select_statement = ', '.join(
+            select_fields
+        ) if select_fields else ', '.join(
+            [f'{alias}.*' for alias in self.fk_joins.values()]
         )
+        return sql_select_statement
 
-        # TODO: repeated actions
-        sql_where_statement = []
-        for field, (
-            lookup_statement, lookup_value
-        ) in self.query_statements['WHERE']['lookups'].items():
-            table_alias, field_name = field.split('.')
-            lookup_value = self._normalize_lookup_value(
-                lookup_statement, lookup_value
+    def _sql_from_statement(self):
+        sql_from_statement = (
+            f'{self.model._table} '
+            f'AS {self.fk_joins.pop(self.PRIMARY_MODEL_KEY)}'
+        )
+        for field, table_alias in self.fk_joins.items():
+            sql_from_statement += (
+                f' LEFT JOIN {self.model._fields[field].rel_model._table} '
+                f'AS {table_alias} '
+                f'ON t0.{field} = '
+                f'{table_alias}.{self.model._fields[field].rel_model._pk.name}'
             )
-            sql_where_statement.append(
-                f'{field_name} {lookup_statement} {lookup_value}'
-            )
-        sql_where_statement = ' AND '.join(sql_where_statement)
-
-        if sql_where_statement:
-            sql += f' WHERE {sql_where_statement}'
-
-        return sql
+        return sql_from_statement
 
     def _sql_where_statement(self, split_table_alias=False):
         sql_where_statement = []
@@ -412,27 +391,13 @@ class QuerySQL:
         ) in self.query_statements['WHERE']['lookups'].items():
             if split_table_alias:
                 table_alias, field_name = field_name.split('.')
-
-            if lookup_statement == 'LIKE':
-                lookup_value = f"'%{lookup_value}%'"
-            elif lookup_statement == 'IN':
-                lookup_value = f'{tuple(lookup_value)}'
-            else:
-                if isinstance(lookup_value, str):
-                    lookup_value = f"'{lookup_value}'"
+            lookup_value = self._normalize_lookup_value(
+                lookup_statement, lookup_value
+            )
             sql_where_statement.append(
                 f'{field_name} {lookup_statement} {lookup_value}'
             )
         return ' AND '.join(sql_where_statement)
-
-    def _normalize_update_value(self, update_value):
-        if isinstance(update_value, str):
-            update_value = f"'{update_value}'"
-        elif isinstance(update_value, Model):
-            update_value = getattr(update_value, update_value._pk.name)
-        if update_value is None:
-            update_value = 'NULL'
-        return update_value
 
     def _normalize_lookup_value(self, lookup_statement, lookup_value):
         if lookup_statement == 'LIKE':
@@ -444,6 +409,15 @@ class QuerySQL:
                 lookup_value = f"'{lookup_value}'"
 
         return lookup_value
+
+    def _normalize_update_value(self, update_value):
+        if isinstance(update_value, str):
+            update_value = f"'{update_value}'"
+        elif isinstance(update_value, Model):
+            update_value = getattr(update_value, update_value._pk.name)
+        if update_value is None:
+            update_value = 'NULL'
+        return update_value
 
     def _fill_statement_fields(self, statement_fields, *args):
         fk_joins = self.fk_joins
@@ -553,7 +527,7 @@ class QuerySet():
         self.querystring = f'{getattr(self.query, query_attr)};'
         print(self.querystring)
         c.execute(self.querystring)
-        # self.db.connection.commit()
+        self.db.connection.commit()
         result = c.fetchall()
         print(result)
 
