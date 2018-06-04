@@ -126,6 +126,7 @@ class ForeignKeyField(Field):
         self.on_update = on_update
 
     def __set__(self, instance, value=None):
+        if value == 'NULL': value = None
         if value is None: value = self.rel_model()
         if not isinstance(value, self.rel_model):
             raise TypeError(instance, self.name, self.rel_model, value)
@@ -296,12 +297,12 @@ class QuerySQL:
             if field_value is None:
                 field_value = 'NULL'
 
-            columns.append(field_name)
-            values.append(field_value)
+            columns.append(f"'{field_name}'")
+            values.append(f"'{field_value}'")
 
         return (
-            f'INSERT INTO {self.model._table}{tuple(columns)} '
-            f'VALUES {tuple(values)}'
+            f'INSERT INTO {self.model._table}({", ".join(columns)}) '
+            f'VALUES ({", ".join(values)})'
         )
 
     @property
@@ -482,22 +483,37 @@ class QuerySet():
     def __init__(self, query_manager, *args, **kwargs):
         self.query = QuerySQL(query_manager.model)
         self.model_pk_name = query_manager.model._pk.name
+        self.model = query_manager.model
         self.db = query_manager.db
+        self.querystring = None
 
-    def save(self, model_instance, *args, **kwargs):
-        self.query.set_model_instance(model_instance, **kwargs)
+    def _save(self, model_instance, *args, **kwargs):
+        inst_dict = model_instance.__dict__
+        if inst_dict.get('id') is None:
+            return self.create(*args, **inst_dict)
+        else:
+            return self._update_and_get(*args, **inst_dict)
 
-        # TODO: write save()
+    def _update_and_get(self, *args, **kwargs):
+        self.query.append_statement('UPDATE', *args, **kwargs)
+        cursor = self._execute('update_stmt')
+        self.db.connection.commit()
+
+        return self.get(**{self.model_pk_name: cursor.lastrowid})
 
     def create(self, *args, **kwargs):
         self.query.set_model_instance(**kwargs)
+        cursor = self._execute('insert_stmt')
+        self.db.connection.commit()
 
-        return self._execute('insert_stmt')
+        return self.get(**{self.model_pk_name: cursor.lastrowid})
 
     def update(self, *args, **kwargs):
         self.query.append_statement('UPDATE', *args, **kwargs)
+        cursor = self._execute('update_stmt')
+        self.db.connection.commit()
 
-        return self._execute('update_stmt')
+        return cursor.rowcount
 
     def delete(self):
         if self.query.should_be_joined:
@@ -506,18 +522,50 @@ class QuerySet():
             self.query.append_statement(
                 'SELECT', *(self.model_pk_name, ), **{}
             )
+        cursor = self._execute('delete_stmt')
+        self.db.connection.commit()
 
-        return self._execute('delete_stmt')
+        return cursor.rowcount
+
+    def get(self, *args, **kwargs):
+        self.query.append_statement('SELECT', *args, **kwargs)
+        self.query.append_statement('WHERE', *args, **kwargs)
+        cursor = self._execute('select_stmt')
+
+        values = cursor.fetchall()
+        values_len = len(values)
+
+        # TODO: exceptions
+        if values_len == 0:
+            raise AttributeError('Does not exist')
+        elif values_len > 1:
+            raise ValueError('Multiple objects error')
+
+        return self.model(**dict(values[0]))
+
+    def get_or_create(self, *args, **kwargs):
+        try:
+            return self.get(*args, **kwargs)
+        except AttributeError:
+            return self.create(*args, **kwargs)
 
     def select_all(self, *args, **kwargs):
         self.query.append_statement('SELECT', *args, **kwargs)
+        cursor = self._execute('select_stmt')
 
-        return self._execute('select_stmt')
+        return [
+            self.model(
+                **dict(init_kwargs)
+            ) for init_kwargs in cursor.fetchall()
+        ]
 
-    def values_list(self, *args, **kwargs):
+    def values(self, *args, **kwargs):
         self.query.append_statement('SELECT', *args, **kwargs)
+        cursor = self._execute('select_stmt')
 
-        return self._execute('select_stmt')
+        return [
+            dict(values_row) for values_row in cursor.fetchall()
+        ]
 
     def filter(self, *args, **kwargs):
         self.query.append_statement('WHERE', *args, **kwargs)
@@ -526,22 +574,22 @@ class QuerySet():
 
     def create_table(self, *args, **kwargs):
         self._execute('create_table_stmt')
+        self.db.connection.commit()
 
         return True
 
     def drop_table(self, *args, **kwargs):
         self._execute('drop_table_stmt')
+        self.db.connection.commit()
 
         return True
 
     def _execute(self, query_attr, *args, **kwargs):
         c = self.db.connection.cursor()
         self.querystring = f'{getattr(self.query, query_attr)};'
-        print(self.querystring)
         c.execute(self.querystring)
-        self.db.connection.commit()
-        result = c.fetchall()
-        print(result)
+
+        return c
 
 
 class QueryManager:
@@ -568,12 +616,23 @@ class Model(metaclass=ModelMeta):
             field_value = kwargs.get(field_name, field.default_value)
             setattr(self, field_name, field_value)
 
+    def __repr__(self):
+        a = ', '.join(
+            [f'{field_name}={getattr(self, field_name)}' for field_name in self.fields.keys()]
+        )
+        return (
+            f'{self.__class__.__name__}('
+            f'{a}'
+            f')'
+        )
+
+
     @property
     def fields(self):
         return self.__class__._fields
 
     def save(self, *args, **kwargs):
-        self.__class__.save(self, *args, **kwargs)
+        return self.__class__._save(self, *args, **kwargs)
 
 
 class SqliteDatabase:
@@ -585,8 +644,7 @@ class SqliteDatabase:
         conn = sqlite3.connect(
             database
         )
-        # conn.isolation_level = None
-        # conn.autocommit(True)
+        conn.row_factory = sqlite3.Row
         return conn
 
     def register_models(self, models=None):
@@ -622,26 +680,42 @@ if __name__ == '__main__':
     db = SqliteDatabase('tmp.db')
     db.register_models([Author, Book])
 
+    author_created = Author.create_table()
+    print('AUTHOR CREATED', author_created)
+    book_created = Book.create_table()
+    print('BOOK CREATED', book_created)
+
     author = Author(name='William Gibson')
+    author.save()
+    print('AUTOR SAVED', author)
+    print('AUTHOR BOOKS', author.books)
     book = Book(author=author, title='Title', pages=100)
+    book.save()
+    print('BOOK SAVED', book)
+    book.pages = 123
+    book.save()
+    print('ONE MORE TIME', book)
 
-    Author.create_table()
-    Book.create_table()
-
-    # book = Book.create(author=author, title='New', pages=80)
-    book = Book.create(title='New', pages=80)
+    book = Book.create(author=author, title='New', pages=80)
+    print('BOOK CREATED', book)
     updated_rows_num = Book.filter(pages=80).update(
         pages=10000, title='LOL!', author=author
     )
+    print('BOOK UPDATED', updated_rows_num)
 
-    # books = Book.values_list('title', 'pages', 'author__name')
-    Book.select_all()
-    Book.filter(
+    books = Book.values('title', 'pages', 'author__name')
+    print('BOOKS values', books)
+    books = Book.select_all()
+    print('ALL BOOKS', books)
+    books_l = Book.filter(
         title='LOL!', author__name__contains='William Gibson'
-    ).filter(pages__gt=10).values_list('coauthor__name', 'rating')
+    ).filter(pages__gt=10).values('coauthor__name', 'rating')
+    print('FILTERED BOOKS', books_l)
 
-    Book.filter(pages=10000).delete()
-    Book.select_all()
+    deleted_rows_num = Book.filter(pages=10000).delete()
+    print('BOOKS DELETED', deleted_rows_num)
 
-    # Author.drop_table()
-    # Book.drop_table()
+    dropped = Author.drop_table()
+    print('AUTHOR DROPPED', dropped)
+    dropped = Book.drop_table()
+    print('BOOK DROPPED', dropped)
