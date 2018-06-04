@@ -310,11 +310,15 @@ class QuerySQL:
         sql_from_statement = self._sql_from_statement()
         sql_where_statement = self._sql_where_statement()
 
-        return (
+        sql = (
             f'SELECT {sql_select_statement} '
-            f'FROM {sql_from_statement} '
-            f'WHERE {sql_where_statement}'
+            f'FROM {sql_from_statement}'
         )
+
+        if sql_where_statement:
+            sql += f' WHERE {sql_where_statement}'
+
+        return sql
 
     @property
     def delete_stmt(self):
@@ -385,6 +389,9 @@ class QuerySQL:
         return sql_from_statement
 
     def _sql_where_statement(self, split_table_alias=False):
+        if 'WHERE' not in self.query_statements:
+            return
+
         sql_where_statement = []
         for field_name, (
             lookup_statement, lookup_value
@@ -501,6 +508,11 @@ class QuerySet():
             )
 
         return self._execute('delete_stmt')
+
+    def select_all(self, *args, **kwargs):
+        self.query.append_statement('SELECT', *args, **kwargs)
+
+        return self._execute('select_stmt')
 
     def values_list(self, *args, **kwargs):
         self.query.append_statement('SELECT', *args, **kwargs)
@@ -619,15 +631,17 @@ if __name__ == '__main__':
     # book = Book.create(author=author, title='New', pages=80)
     book = Book.create(title='New', pages=80)
     updated_rows_num = Book.filter(pages=80).update(
-        pages=100000, title='LOL!', author=author
+        pages=10000, title='LOL!', author=author
     )
 
     # books = Book.values_list('title', 'pages', 'author__name')
+    Book.select_all()
     Book.filter(
         title='LOL!', author__name__contains='William Gibson'
     ).filter(pages__gt=10).values_list('coauthor__name', 'rating')
 
     Book.filter(pages=10000).delete()
+    Book.select_all()
 
     # Author.drop_table()
     # Book.drop_table()
