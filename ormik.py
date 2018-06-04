@@ -126,6 +126,7 @@ class ForeignKeyField(Field):
         self.on_update = on_update
 
     def __set__(self, instance, value=None):
+        # TODO: why always None?
         if value == 'NULL': value = None
         if value is None: value = self.rel_model()
         if not isinstance(value, self.rel_model):
@@ -626,7 +627,6 @@ class Model(metaclass=ModelMeta):
         return (
             f'{self.__class__.__name__}({fields_repr}))'
         )
-
 
     @property
     def fields(self):
