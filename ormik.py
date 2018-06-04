@@ -1,7 +1,4 @@
 import sqlite3
-import queue
-import functools
-import collections
 
 
 CASCADE = 'CASCADE'
@@ -18,7 +15,11 @@ class FieldSQL:
         bool: 'BOOLEAN',
     }
 
-    def _generate_field_sql(self, field):
+    def __init__(self, field, *args, **kwargs):
+        self.field = field
+
+    def _generate_field_sql(self):
+        field = self.field
         field_type = int if not hasattr(field, 'ty') else field.ty
         field_is_autoincremented = isinstance(field, AutoField)
         sql = f'{field.name} {self.SQL_TYPES_MAPPING[field_type]}'
@@ -29,7 +30,7 @@ class FieldSQL:
         if field.is_primary_key:
             sql += f' PRIMARY KEY'
 
-        if field.is_nullable and not field_is_autoincremented:
+        if not (field.is_nullable or field_is_autoincremented):
             sql += f' NOT NULL'
 
         if field.default_value is not None:
@@ -40,34 +41,24 @@ class FieldSQL:
 
         return sql
 
-    def __set__(self, field, value):
-        self.field = field
-
-    def __get__(self, field, field_type=None):
-        return self._generate_field_sql(field)
-
-
-class TableConstraintsSQL:
-
-    def _generate_fk_constraints(self, field):
+    def _generate_fk_constraints(self):
+        field = self.field
         return (
             f' FOREIGN KEY ({field.name})'
             f' REFERENCES {field.rel_model._table} ({field.name})'
             f' ON DELETE {field.on_delete} ON UPDATE {field.on_update}'
-        )
+        ) if isinstance(field, ForeignKeyField) else None
 
-    def __set__(self, field, value):
-        self.field = field
+    @property
+    def column_definition(self):
+        return self._generate_field_sql()
 
-    def __get__(self, field, field_type=None):
-        if isinstance(field, ForeignKeyField):
-            return self._generate_fk_constraints(field)
+    @property
+    def table_constraints(self):
+        return self._generate_fk_constraints()
 
 
 class Field:
-
-    column_definition_sql = FieldSQL()
-    table_constraints_sql = TableConstraintsSQL()
 
     def __init__(
         self,
@@ -78,7 +69,7 @@ class Field:
         self.is_nullable = null
         self.default_value = default
         self.is_primary_key = primary_key
-        self.sql = self
+        self.query = FieldSQL(self)
 
     def __set__(self, instance, value):
         if not self.is_nullable and self.default_value is None:
@@ -89,9 +80,11 @@ class Field:
         instance.__dict__[self.name] = value
 
     def __repr__(self):
-        return f'{self.__class__.__name__}' \
-               f'({self.name}, pk={self.is_primary_key}, ' \
-               f'null={self.is_nullable}, default={self.default_value})'
+        return (
+            f'{self.__class__.__name__}'
+            f'({self.name}, pk={self.is_primary_key}, '
+            f'null={self.is_nullable}, default={self.default_value})'
+        )
 
 
 class SizedField(Field):
@@ -132,7 +125,8 @@ class ForeignKeyField(Field):
         self.on_delete = on_delete
         self.on_update = on_update
 
-    def __set__(self, instance, value):
+    def __set__(self, instance, value=None):
+        if value is None: value = self.rel_model()
         if not isinstance(value, self.rel_model):
             raise TypeError(instance, self.name, self.rel_model, value)
         super().__set__(instance, value)
@@ -237,61 +231,9 @@ class ModelMeta(type):
         raise AttributeError(attr)
 
 
-PRIMARY_MODEL_KEY = 'PRIMARYMODELKEY'
-
-
-class SqlStatementsQueue(queue.PriorityQueue):
-
-    STATEMENT_ALIAS_PRIORITY = {
-        'SELECT': 1,
-        'UPDATE': 1,
-        'INSERT': 1,
-        'DELETE': 1,
-        'CREATE': 1,
-        'DROP': 1,
-        'WHERE': 2,
-    }
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.priority_statement_in_use = False
-        self.priorities_in_use = set()
-
-    def append(self, statement):
-        sql_statement, statement_alias = statement
-        statement_priority = self.STATEMENT_ALIAS_PRIORITY[statement_alias]
-        if statement_priority == 1:
-            self.priority_statement_in_use = True
-            if statement_priority in self.priorities_in_use:
-                # Swap priority statements
-                self.queue.pop(0)
-        self.priorities_in_use.add(statement_priority)
-        self.put((statement_priority, sql_statement))
-
-    @property
-    def values(self):
-        values = []
-        while not self.empty():
-            values.append(self.queue.pop(0)[1])
-        return values
-
-
-SQL_TEMPLATES = {
-}
-
-
-FIELD_LOOKUP_MAPPING = {
-    'exact': '=',
-    'gt': '>',
-    'gte': '>=',
-    'lt': '<',
-    'lte': '<=',
-    'contains': 'LIKE',
-    'in': 'IN',
-}
-
-
 class QuerySQL:
+
+    PRIMARY_MODEL_KEY = 'PRIMARYMODELKEY'
 
     FIELD_LOOKUP_MAPPING = {
         'exact': '=',
@@ -301,231 +243,176 @@ class QuerySQL:
         'lte': '<=',
         'contains': 'LIKE',
         'in': 'IN',
+        'is': 'IS',
     }
 
-    def __set__(self, queryset, value):
-        self.qs = queryset
-
-    def __get__(self, queryset, queryset_type=None):
-        return '123'
-
-
-def fill_query_statement(method):
-    functools.wraps(method)
-
-    # def _fill_query_fks(fields, lookups, fks=None):
-    #     if fks is None: fks = set()
-
-    #     for field in list(fields) + list(lookups.keys()):
-    #         if '__' in field:
-    #             fk = field.split('__')[0]
-    #             fks.add(fk)
-
-    #     print('FKS', fks, list(fields) + list(lookups.keys()))
-    #     return fks
-
-    def wrapper(queryset, *args, **kwargs):
-        statement_alias = method.__name__
-        query_statement_dict = queryset.query_statements
-        if statement_alias not in query_statement_dict:
-            query_statement_dict[statement_alias] = {
-                'fields': [arg for arg in args],
-                'lookups': kwargs,
-                # 'fks': _fill_query_fks(args, kwargs)
-            }
-        else:
-            statements = query_statement_dict[statement_alias]
-            statements['fields'].extend(list(args))
-            statements['lookups'].update(kwargs)
-            # statements['fks'] = _fill_query_fks(
-            #     args, kwargs, statements['fks']
-            # )
-
-        return method(queryset, *args, **kwargs)
-    return wrapper
-
-
-def sql_generator_methods(cls):
-    for name, val in vars(cls).items():
-        if callable(val) and not name.startswith('_'):
-            setattr(cls, name, fill_query_statement(val))
-    return cls
-
-
-class QuerySetMeta(type):
-
-    def __new__(mtcls, name, bases, clsdict):
-
-        qs_cls = super().__new__(mtcls, name, bases, clsdict)
-        qs_cls = sql_generator_methods(qs_cls)
-
-        return qs_cls
-
-
-class QuerySet(metaclass=QuerySetMeta):
-
-    query = QuerySQL()
-
-    def __init__(self, query_manager, *args, **kwargs):
-        self.query_manager = query_manager
-        self.query_statements = collections.OrderedDict()
-        self.db = self.query_manager.db
-        self._reset()
-
-    def _append_statement(self, sql_statement):
-        statement_alias = sql_statement.split(None, 1)[0].strip()
-        self.sql_statements_queue.append((sql_statement, statement_alias))
-
-    def _reset(self):
-        self.sql_statements_queue = SqlStatementsQueue()
-        self.models_fields_to_select = {
-            PRIMARY_MODEL_KEY: ('t0', [])
+    def __init__(self, model, *args, **kwargs):
+        self.model = model
+        self.query_statements = {}
+        self.fk_joins = {
+            self.PRIMARY_MODEL_KEY: 't0'
         }
+        self.model_instance = None
 
     @property
-    def priority_statement_in_use(self):
-        return self.sql_statements_queue.priority_statement_in_use
+    def should_be_joined(self):
+        return len(self.fk_joins) > 1
 
-    def _add_field_to_select(self, field, fk_key=PRIMARY_MODEL_KEY):
-        self.models_fields_to_select[fk_key][1].append(field)
+    @property
+    def create_table_stmt(self):
+        columns_definition_list, table_constraints_list = [], []
+        for field in self.model._fields.values():
+            columns_definition_list.append(
+                field.query.column_definition
+            )
+            table_constraints = field.query.table_constraints
+            if table_constraints is not None:
+                table_constraints_list.append(table_constraints)
+        columns_definition_sql = ', '.join(columns_definition_list)
+        table_constraints_sql = ', '.join(table_constraints_list)
+        if table_constraints_sql:
+            columns_definition_sql = f'{columns_definition_sql},'
 
-    def _add_table_alias_to_select(self, alias, fk_key):
-        self.models_fields_to_select[fk_key] = (alias, [])
+        return (
+            f'CREATE TABLE IF NOT EXISTS {self.model._table} ('
+            f'{columns_definition_sql}'
+            f'{table_constraints_sql}'
+            f')'
+        )
 
-    def _populate_models_fields_to_select(self, *args, **kwargs):
-        tables_counter = 0
-        if not args:
-            args = [f'{PRIMARY_MODEL_KEY}__*']
-            for field_name, field in self.query_manager.model._fields.items():
-                if isinstance(field, ForeignKeyField):
-                    args.append(f'{field_name}__*')
+    @property
+    def drop_table_stmt(self):
+        return f'DROP TABLE {self.model._table}'
 
-        for field in args:
-            fk, field_name = PRIMARY_MODEL_KEY, field
-            if '__' in field:
-                fk, field_name = field.split('__')
-
-            if fk not in self.models_fields_to_select:
-                tables_counter += 1
-                self._add_table_alias_to_select(
-                    f't{tables_counter}', fk_key=fk
-                )
-
-            self._add_field_to_select(field_name, fk_key=fk)
-
-    def create(self, *args, **kwargs):
-        inst = self.model(**kwargs)
+    @property
+    def insert_stmt(self):
+        inst = self.model_instance
         columns, values = [], []
         for field_name, field in inst.fields.items():
             if isinstance(field, AutoField): continue
             field_value = getattr(inst, field_name)
             if isinstance(field, ForeignKeyField):
                 field_value = field_value.id
+            if field_value is None:
+                field_value = 'NULL'
 
             columns.append(field_name)
             values.append(field_value)
 
-        sql = (
-            f'INSERT INTO {self.model._table} {tuple(columns)} '
+        return (
+            f'INSERT INTO {self.model._table}{tuple(columns)} '
             f'VALUES {tuple(values)}'
         )
-        self.queryset._append_statement(sql)
 
-        return self.queryset.execute()
+    @property
+    def select_stmt(self):
+        select_fields = self.query_statements['SELECT']['fields']
+        sql_fields_statement = ', '.join(
+            select_fields
+        ) if select_fields else ', '.join(
+            [f'{alias}.*' for alias in self.fk_joins.values()]
+        )
+        sql_from_statement = (
+            f'{self.model._table} '
+            f'AS {self.fk_joins.pop(self.PRIMARY_MODEL_KEY)}'
+        )
+        for field, table_alias in self.fk_joins.items():
+            sql_from_statement += (
+                f' LEFT JOIN {self.model._fields[field].rel_model._table} '
+                f'AS {table_alias} '
+                f'ON t0.{field} = '
+                f'{table_alias}.{self.model._fields[field].rel_model._pk.name}'
+            )
+        sql_where_statement = []
+        for field, (
+            lookup_statement, lookup_value
+        ) in self.query_statements['WHERE']['lookups'].items():
+            lookup_value = self._normalize_lookup_value(
+                lookup_statement, lookup_value
+            )
+            sql_where_statement.append(
+                f'{field} {lookup_statement} {lookup_value}'
+            )
+        sql_where_statement = ' AND '.join(sql_where_statement)
 
-    def update(self, *args, **kwargs):
-        update_statements = []
-        for field_name, field_value in kwargs.items():
-            if isinstance(field_value, Model):
-                field_value = field_value.id
-            if isinstance(field_value, str):
-                field_value = f"'{field_value}'"
+        return (
+            f'SELECT {sql_fields_statement} '
+            f'FROM {sql_from_statement} '
+            f'WHERE {sql_where_statement}'
+        )
 
-            update_statement = f"{field_name} = {field_value}"
-            update_statements.append(update_statement)
-        update_statements = ', '.join(update_statements)
+    @property
+    def delete_stmt(self):
+        if self.should_be_joined:
+            sql_where_statement = (
+                f'{self.model._pk.name} IN ({self.select_stmt})'
+            )
+        else:
+            sql_where_statement = []
+            for field, (
+                lookup_statement, lookup_value
+            ) in self.query_statements['WHERE']['lookups'].items():
+                table_alias, field_name = field.split('.')
+                lookup_value = self._normalize_lookup_value(
+                    lookup_statement, lookup_value
+                )
+                sql_where_statement.append(
+                    f'{field_name} {lookup_statement} {lookup_value}'
+                )
+            sql_where_statement = ' AND '.join(sql_where_statement)
+
+        return (
+            f'DELETE FROM {self.model._table} '
+            f'WHERE {sql_where_statement}'
+        )
+
+    @property
+    def update_stmt(self):
+        if self.should_be_joined:
+            raise ValueError(
+                'QuerySet can only update columns in the model’s main table'
+            )
+        sql_update_statement = []
+        for field, (
+            _, value
+        ) in self.query_statements['UPDATE']['lookups'].items():
+            table_alias, field_name = field.split('.')
+            value = self._normalize_update_value(value)
+            sql_update_statement.append(f'{field_name} = {value}')
+        sql_update_statement = ', '.join(sql_update_statement)
 
         sql = (
             f'UPDATE {self.model._table} '
-            f'SET {update_statements}'
+            f'SET {sql_update_statement}'
         )
-        self.queryset._append_statement(sql)
 
-        return self.queryset.execute()
-
-    def delete(self):
-        primary_table_alias = \
-            self.queryset.models_fields_to_select[PRIMARY_MODEL_KEY][0]
-        sql = f'DELETE FROM {self.model._table} AS {primary_table_alias}'
-        self.queryset._append_statement(sql)
-
-        return self.queryset.execute()
-
-    def values_list(self, *args, **kwargs):
-        self._select(*args)
-
-        return self._execute()
-
-    def _select(self, *args, **kwargs):
-        self._populate_models_fields_to_select(*args)
-
-        sql_fields_statement = []
-        sql_from_statement = {}
-        for fk, (
-            table_alias, table_fields_list
-        ) in self.models_fields_to_select.items():
-            # Fill FROM tables
-            table_name, field = (
-                self.query_manager.model._table,
-                self.query_manager.model._fields.get(fk, fk)
+        # TODO: repeated actions
+        sql_where_statement = []
+        for field, (
+            lookup_statement, lookup_value
+        ) in self.query_statements['WHERE']['lookups'].items():
+            table_alias, field_name = field.split('.')
+            lookup_value = self._normalize_lookup_value(
+                lookup_statement, lookup_value
             )
-            if isinstance(field, ForeignKeyField):
-                sql_from_statement[field.name] = (
-                    f'LEFT JOIN {field.rel_model._table} AS {table_alias} '
-                    f'ON t0.{field.name} = '
-                    f'{table_alias}.{field.rel_model._pk.name}'
-                )
-            else:
-                sql_from_statement[field] = f'{table_name} AS {table_alias}'
+            sql_where_statement.append(
+                f'{field_name} {lookup_statement} {lookup_value}'
+            )
+        sql_where_statement = ' AND '.join(sql_where_statement)
 
-            # Fill SELECT fields
-            for table_field in table_fields_list:
-                sql_fields_statement.append(f'{table_alias}.{table_field}')
+        if sql_where_statement:
+            sql += f' WHERE {sql_where_statement}'
 
-        sql_fields_statement = ', '.join(sql_fields_statement)
-        sql_from_statement = ' '.join(sql_from_statement.values())
+        return sql
 
-        sql = (
-            f'SELECT {sql_fields_statement} '
-            f'FROM {sql_from_statement}'
-        )
-        self._append_statement(sql)
+    def _sql_where_statement(self, split_table_alias=False):
+        sql_where_statement = []
+        for field_name, (
+            lookup_statement, lookup_value
+        ) in self.query_statements['WHERE']['lookups'].items():
+            if split_table_alias:
+                table_alias, field_name = field_name.split('.')
 
-    def filter(self, *args, **kwargs):
-        if not self.priority_statement_in_use:
-            self._select(*args, **kwargs)
-
-        where_statement_clauses = []
-        for field_lookup, lookup_value in kwargs.items():
-            field_lookup_bricks = field_lookup.split('__')
-            if field_lookup_bricks[-1] not in FIELD_LOOKUP_MAPPING:
-                field_lookup_bricks.append('exact')
-            field = field_lookup_bricks.pop(0)
-
-            # Get field = {table_alias}.{field_name}
-            if len(field_lookup_bricks) > 1:
-                # Field is FK
-                fk_table_alias = \
-                    self.models_fields_to_select[field][0]
-                fk_table_field = field_lookup_bricks.pop(0)
-                field = f'{fk_table_alias}.{fk_table_field}'
-            else:
-                primary_table_alias = \
-                    self.models_fields_to_select[PRIMARY_MODEL_KEY][0]
-                field = f'{primary_table_alias}.{field}'
-
-            # Get value with regard to lookup statement
-            lookup_statement = FIELD_LOOKUP_MAPPING[field_lookup_bricks.pop()]
             if lookup_statement == 'LIKE':
                 lookup_value = f"'%{lookup_value}%'"
             elif lookup_statement == 'IN':
@@ -533,61 +420,142 @@ class QuerySet(metaclass=QuerySetMeta):
             else:
                 if isinstance(lookup_value, str):
                     lookup_value = f"'{lookup_value}'"
+            sql_where_statement.append(
+                f'{field_name} {lookup_statement} {lookup_value}'
+            )
+        return ' AND '.join(sql_where_statement)
 
-            where_statement_clauses.append(
-                f'{field} {lookup_statement} {lookup_value}'
+    def _normalize_update_value(self, update_value):
+        if isinstance(update_value, str):
+            update_value = f"'{update_value}'"
+        elif isinstance(update_value, Model):
+            update_value = getattr(update_value, update_value._pk.name)
+        if update_value is None:
+            update_value = 'NULL'
+        return update_value
+
+    def _normalize_lookup_value(self, lookup_statement, lookup_value):
+        if lookup_statement == 'LIKE':
+            lookup_value = f"'%{lookup_value}%'"
+        elif lookup_statement == 'IN':
+            lookup_value = f'{tuple(lookup_value)}'
+        else:
+            if isinstance(lookup_value, str):
+                lookup_value = f"'{lookup_value}'"
+
+        return lookup_value
+
+    def _fill_statement_fields(self, statement_fields, *args):
+        fk_joins = self.fk_joins
+        for field_name in args:
+            fk = self.PRIMARY_MODEL_KEY
+            if '__' in field_name:
+                # Field name is FK
+                fk, field_name = field_name.split('__')
+                if fk not in fk_joins:
+                    fk_joins[fk] = f't{len(fk_joins)}'
+            statement_fields.append(f'{fk_joins[fk]}.{field_name}')
+
+    def _fill_statement_lookups(self, statement_lookups, **kwargs):
+        fk_joins = self.fk_joins
+        for field_lookup, lookup_value in kwargs.items():
+            fk = self.PRIMARY_MODEL_KEY
+            field_lookup_bricks = field_lookup.split('__')
+            if field_lookup_bricks[-1] not in self.FIELD_LOOKUP_MAPPING:
+                field_lookup_bricks.append('exact')
+
+            if len(field_lookup_bricks) > 2:
+                # Field is FK
+                fk = field_lookup_bricks.pop(0)
+
+            field_name, lookup_statement = field_lookup_bricks
+            if fk not in fk_joins:
+                fk_joins[fk] = f't{len(fk_joins)}'
+
+            statement_lookups[
+                f'{fk_joins[fk]}.{field_name}'
+            ] = (
+                f'{self.FIELD_LOOKUP_MAPPING[lookup_statement]}', lookup_value
             )
 
-        where_statement_clauses = ' AND '.join(where_statement_clauses)
-        sql = f' WHERE {where_statement_clauses}'
-        self._append_statement(sql)
+    def append_statement(self, statement_alias, *args, **kwargs):
+        query_statement_dict = self.query_statements
+        statement_meta = {
+            'fields': [],
+            'lookups': {}
+        } if statement_alias not in query_statement_dict else \
+            query_statement_dict[statement_alias]
 
-        # return self._execute()
+        self._fill_statement_fields(statement_meta['fields'], *args)
+        self._fill_statement_lookups(statement_meta['lookups'], **kwargs)
+
+        query_statement_dict[statement_alias] = statement_meta
+
+    def set_model_instance(self, model_instance=None, **kwargs):
+        self.model_instance = self.model(**kwargs) if \
+            model_instance is None else model_instance
+
+
+class QuerySet():
+
+    def __init__(self, query_manager, *args, **kwargs):
+        self.query = QuerySQL(query_manager.model)
+        self.model_pk_name = query_manager.model._pk.name
+        self.db = query_manager.db
+
+    def save(self, model_instance, *args, **kwargs):
+        self.query.set_model_instance(model_instance, **kwargs)
+
+        # TODO: write save()
+
+    def create(self, *args, **kwargs):
+        self.query.set_model_instance(**kwargs)
+
+        return self._execute('insert_stmt')
+
+    def update(self, *args, **kwargs):
+        self.query.append_statement('UPDATE', *args, **kwargs)
+
+        return self._execute('update_stmt')
+
+    def delete(self):
+        if self.query.should_be_joined:
+            # Join should be made.
+            # Make it upon 'pk' to create request "WHERE PK in (SELECT PK ...)
+            self.query.append_statement(
+                'SELECT', *(self.model_pk_name, ), **{}
+            )
+
+        return self._execute('delete_stmt')
+
+    def values_list(self, *args, **kwargs):
+        self.query.append_statement('SELECT', *args, **kwargs)
+
+        return self._execute('select_stmt')
+
+    def filter(self, *args, **kwargs):
+        self.query.append_statement('WHERE', *args, **kwargs)
+
         return self
 
     def create_table(self, *args, **kwargs):
-        columns_definition_list, table_constraints_list = [], []
-        for field in self.query_manager.model._fields.values():
-            columns_definition_list.append(
-                field.column_definition_sql
-            )
-            table_constraints = field.table_constraints_sql
-            if table_constraints is not None:
-                table_constraints_list.append(table_constraints)
-
-        columns_definition_sql = ', '.join(columns_definition_list)
-        table_constraints_sql = ', '.join(table_constraints_list)
-        if table_constraints_sql:
-            columns_definition_sql = f'{columns_definition_sql},'
-
-        sql = (
-            f'CREATE TABLE IF NOT EXISTS {self.query_manager.model._table} ('
-            f'{columns_definition_sql}'
-            f'{table_constraints_sql}'
-            f')'
-        )
-        self._append_statement(sql)
-        self._execute()
+        self._execute('create_table_stmt')
 
         return True
 
     def drop_table(self, *args, **kwargs):
-        sql = f'DROP TABLE {self.query_manager.model._table}'
-        self._append_statement(sql)
-        self._execute()
+        self._execute('drop_table_stmt')
 
         return True
 
-    def _execute(self, *args, **kwargs):
+    def _execute(self, query_attr, *args, **kwargs):
         c = self.db.connection.cursor()
-        self.query = f"{''.join(self.sql_statements_queue.values)};"
-        # print(self.query)
-        # c.execute(self.query)
-        # print(c.fetchone())
-        print(id(self))
-        print(self.query_statements)
-        self.db.connection.commit()
-        self._reset()
+        self.querystring = f'{getattr(self.query, query_attr)};'
+        print(self.querystring)
+        c.execute(self.querystring)
+        # self.db.connection.commit()
+        result = c.fetchall()
+        print(result)
 
 
 class QueryManager:
@@ -618,6 +586,9 @@ class Model(metaclass=ModelMeta):
     def fields(self):
         return self.__class__._fields
 
+    def save(self, *args, **kwargs):
+        self.__class__.save(self, *args, **kwargs)
+
 
 class SqliteDatabase:
 
@@ -628,7 +599,8 @@ class SqliteDatabase:
         conn = sqlite3.connect(
             database
         )
-        conn.isolation_level = None
+        # conn.isolation_level = None
+        # conn.autocommit(True)
         return conn
 
     def register_models(self, models=None):
@@ -655,33 +627,33 @@ if __name__ == '__main__':
     class Book(Model):
 
         id = AutoField()
-        author = ForeignKeyField(Author, 'books')
-        title = CharField()
-        pages = IntegerField()
-        coauthor = ForeignKeyField(Author, 'cobooks')
-        rating = IntegerField()
+        author = ForeignKeyField(Author, 'books', is_nullable=True)
+        title = CharField(default='Title')
+        pages = IntegerField(default=100)
+        coauthor = ForeignKeyField(Author, 'cobooks', is_nullable=True)
+        rating = IntegerField(default=10)
 
     db = SqliteDatabase('tmp.db')
     db.register_models([Author, Book])
 
-    # author = Author(name='William Gibson')
-    # book = Book(author=author, title='Title', pages=100)
+    author = Author(name='William Gibson')
+    book = Book(author=author, title='Title', pages=100)
 
-    # Author.create_table()
-    # Book.create_table()
+    Author.create_table()
+    Book.create_table()
 
     # book = Book.create(author=author, title='New', pages=80)
-    # updated_rows_num = Book.filter(pages=80).update(
-    #     pages=100000, title='LOL!', author=author
-    # )
+    book = Book.create(title='New', pages=80)
+    updated_rows_num = Book.filter(pages=80).update(
+        pages=100000, title='LOL!', author=author
+    )
 
     # books = Book.values_list('title', 'pages', 'author__name')
     Book.filter(
-        title='LOL!', author__name__contains='William Gibson', pages__gt=10
-    ).values_list('coauthor__name', 'rating')
+        title='LOL!', author__name__contains='William Gibson'
+    ).filter(pages__gt=10).values_list('coauthor__name', 'rating')
 
-    # # TODO: FK in delete!
-    # deleted_rows_count = Book.filter(pages=10000).delete()
+    Book.filter(pages=10000).delete()
 
     # Author.drop_table()
     # Book.drop_table()
