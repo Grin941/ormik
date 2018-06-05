@@ -21,7 +21,7 @@ $ make
 To run built-in test ORM project type:
 
 ```
-$ ormik [db]
+$ orm [db]
 ```
 
 ## QuickStart
