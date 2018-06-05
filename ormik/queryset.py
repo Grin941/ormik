@@ -6,6 +6,8 @@ from ormik.db import OperationalError
 from ormik.sql import QuerySQL
 from ormik.models import Model
 
+__all__ = ['QuerySet', 'QueryManager']
+
 
 def clear_lookup_statements(cls_method):
     @wraps(cls_method)

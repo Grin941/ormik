@@ -1,6 +1,6 @@
 from ormik import QueryError, fields
 
-__all__ = ['FieldSQL', 'QueryError']
+__all__ = ['FieldSQL', 'QuerySQL']
 
 
 NULL = 'NULL'

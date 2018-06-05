@@ -1,5 +1,4 @@
-from ormik import PkCountError, ModelRegistrationError
-from ormik.fields import Field, ReversedForeignKeyField, ForeignKeyField
+from ormik import PkCountError, ModelRegistrationError, fields
 
 __all__ = ['Model']
 
@@ -11,7 +10,7 @@ class ModelMeta(type):
         setattr(
             fk_field.rel_model,
             fk_field.reverse_name,
-            ReversedForeignKeyField(fk_model, fk_field.name)
+            fields.ReversedForeignKeyField(fk_model, fk_field.name)
         )
 
     @staticmethod
@@ -35,7 +34,7 @@ class ModelMeta(type):
         model_cls._fields = {
             attr_name: attr for attr_name, attr in
             model_cls.__dict__.items() if
-            isinstance(attr, Field)
+            isinstance(attr, fields.Field)
         }
         model_cls._table = clsdict.get('__tablename__', name.lower())
         model_cls._pk = None
@@ -48,7 +47,7 @@ class ModelMeta(type):
                 pk_count += 1
 
             # Create reverse_attr for FK model
-            if isinstance(model_field, ForeignKeyField):
+            if isinstance(model_field, fields.ForeignKeyField):
                 ModelMeta._add_reversed_fk(model_field, model_cls)
 
         ModelMeta._validate_pk_count(pk_count, name)
