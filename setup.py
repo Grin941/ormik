@@ -29,6 +29,6 @@ setup(
     ],
     entry_points={
         # Run test ORM project
-        'console_scripts': ['ormik=bin.orm:main']
+        'console_scripts': ['orm=bin.orm:main']
     },
 )

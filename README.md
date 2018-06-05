@@ -212,4 +212,4 @@ drop_table()
 
 ```
 $ PYTHONPATH=. pytest
-```Drops DB table.
+```
