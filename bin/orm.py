@@ -1,9 +1,6 @@
 import argparse
 
-from ormik.fields import \
-    ForeignKeyField, IntegerField, CharField, AutoField
-from ormik.models import Model, CASCADE, NO_ACTION
-from ormik.db import SqliteDatabase
+from ormik import fields, models, db
 
 
 def parse_user_settings():
@@ -20,55 +17,69 @@ def parse_user_settings():
 def main():
     user_settings = parse_user_settings()
 
-    class Author(Model):
+    class Author(models.Model):
 
-        id = AutoField()
-        name = CharField()
+        id = fields.AutoField()
+        name = fields.CharField()
 
-    class Book(Model):
+    class Book(models.Model):
+        __tablename__ = 'good_books'
 
-        id = AutoField()
-        author = ForeignKeyField(
-            Author, 'books', is_nullable=True, on_delete=CASCADE
+        id = fields.AutoField()
+        author = fields.ForeignKeyField(
+            Author, 'books', is_nullable=True, on_delete=models.CASCADE
         )
-        title = CharField(default='Title')
-        pages = IntegerField(default=100)
-        coauthor = ForeignKeyField(
-            Author, 'cobooks', is_nullable=True, on_delete=NO_ACTION
+        title = fields.CharField(default='Title')
+        pages = fields.IntegerField(default=100)
+        coauthor = fields.ForeignKeyField(
+            Author, 'cobooks', is_nullable=True, on_delete=models.NO_ACTION
         )
-        rating = IntegerField(default=10)
-        name = CharField(default='Book name')
+        rating = fields.IntegerField(default=10)
+        name = fields.CharField(default='Book name')
 
-    db = SqliteDatabase(user_settings.db)
-    db.register_models([Author, Book])
+    database = db.SqliteDatabase(user_settings.db)
+    database.register_models([Author, Book])
 
     # Create table
     created = Author.create_table()
+    print('Author table created', created)
     created = Book.create_table()
+    print('Book table created', created)
 
     # Save
     author = Author(name='William Gibson')
     author.save()
+    print('Author created', author)
     book = Book(author=author, title='Title', pages=100)
     book.save()
     book.pages = 123
     book.save()
+    print('Book created', book)
 
     # CRUD
     book = Book.create(author=author, title='New', pages=80)
+    print('Book created', book)
     updated_rows_num = Book.filter(pages=80).update(
         pages=10000, title='LOL!', author=author
     )
+    print(updated_rows_num, 'Books updated')
     deleted_rows_num = Book.filter(pages=10000).delete()
+    print(deleted_rows_num, 'Books deleted')
 
     # Select
     books = Book.values('title', 'pages', 'author__name')
+    print('Books values', books)
     book = Book.get(id=1)
+    print('Book selected', book)
     books = Book.select_all()
+    print('All books', books)
+
+    print('Filter books')
     for book in Book.filter(pages__gt=10):
-        pass
+        print(book)
+    print('Author books')
     for book in author.books:
-        pass
+        print(book)
 
     # Multiple filter
     books = Book.filter(
@@ -76,14 +87,18 @@ def main():
     ).filter(pages__gt=10).values(
         'title', 'author__name'
     )
+    print('Multiple filters', books)
 
     # CASCADE delete
     Author.filter(id=1).delete()
     books = Book.select_all()
+    print('Books CASCADE removed', books)
 
     # Drop table
     dropped = Author.drop_table()
+    print('Author dropped', dropped)
     dropped = Book.drop_table()
+    print('Book dropped', dropped)
 
 
 if __name__ == '__main__':

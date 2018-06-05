@@ -137,7 +137,7 @@ AutoField(is_nullable=True, default=None, primary_key=True)
 ## Lookup operations
 
 Lookup operations used in filter(),
-for instance, Model.filter(field__gt=10):
+for instance, ```Model.filter(field__gt=10)```:
 
 ```
 __exact    ->    =
@@ -208,4 +208,8 @@ Creates Model as a DB table.
 drop_table()
 ```
 
-Drops DB table.
+## Testing
+
+```
+$ PYTHONPATH=. pytest
+```Drops DB table.

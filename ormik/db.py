@@ -1,6 +1,6 @@
 import sqlite3
 
-from sqlite3 import OperationalError as OperationalError
+from sqlite3 import OperationalError
 
 from ormik import ModelRegistrationError
 from ormik.models import ModelMeta
