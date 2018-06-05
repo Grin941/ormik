@@ -63,7 +63,7 @@ def main():
         pages=10000, title='LOL!', author=author
     )
     print(updated_rows_num, 'Books updated')
-    deleted_rows_num = Book.filter(pages=10000).delete()
+    deleted_rows_num = Book.filter(pages__in=[10000, 1234]).delete()
     print(deleted_rows_num, 'Books deleted')
 
     # Select

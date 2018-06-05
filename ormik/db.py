@@ -3,7 +3,7 @@ import sqlite3
 from sqlite3 import OperationalError
 
 from ormik import ModelRegistrationError
-from ormik.models import ModelMeta
+from ormik.models import Model
 from ormik.queryset import QueryManager
 
 
@@ -29,7 +29,7 @@ class SqliteDatabase:
             models_to_register = [models_to_register]
 
         for model in models_to_register:
-            if not type(model) == ModelMeta:
+            if not issubclass(model, Model):
                 raise ModelRegistrationError(
                     f'Please pass list of models to {self}.'
                     f'"{model}" is not a Model'
