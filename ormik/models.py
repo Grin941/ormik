@@ -1,13 +1,7 @@
 from ormik import PkCountError, ModelRegistrationError
-from ormik.fields import ReversedForeignKeyField, Field, ForeignKeyField
+from ormik.fields import Field, ReversedForeignKeyField, ForeignKeyField
 
-__all__ = ['Model', 'CASCADE', 'RESTRICT', 'SET_NULL', 'NO_ACTION']
-
-
-CASCADE = 'CASCADE'
-RESTRICT = 'RESTRICT'
-SET_NULL = 'SET_NULL'
-NO_ACTION = 'NO ACTION'
+__all__ = ['Model']
 
 
 class ModelMeta(type):

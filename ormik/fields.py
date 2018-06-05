@@ -1,9 +1,6 @@
-from ormik import FieldError, models
-from ormik.sql import FieldSQL, NULL
+from ormik import FieldError
 
-__all__ = [
-    'AutoField', 'ForeignKeyField', 'CharField', 'IntegerField', 'BooleanField'
-]
+from ormik.sql import FieldSQL, NO_ACTION, NULL
 
 
 class Field:
@@ -64,7 +61,7 @@ class ForeignKeyField(Field):
 
     def __init__(
         self, model, reverse_name, *args,
-        on_delete=models.NO_ACTION, on_update=models.NO_ACTION,
+        on_delete=NO_ACTION, on_update=NO_ACTION,
         **kwargs
     ):
         super().__init__(*args, **kwargs)

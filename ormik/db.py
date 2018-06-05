@@ -22,13 +22,13 @@ class SqliteDatabase:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def register_models(self, models=None):
-        if models is None:
-            models = []
-        elif not isinstance(models, list):
-            models = [models]
+    def register_models(self, models_to_register=None):
+        if models_to_register is None:
+            models_to_register = []
+        elif not isinstance(models_to_register, list):
+            models_to_register = [models_to_register]
 
-        for model in models:
+        for model in models_to_register:
             if not type(model) == ModelMeta:
                 raise ModelRegistrationError(
                     f'Please pass list of models to {self}.'

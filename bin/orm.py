@@ -1,6 +1,6 @@
 import argparse
 
-from ormik import fields, models, db
+from ormik import fields, models, db, sql
 
 
 def parse_user_settings():
@@ -8,8 +8,8 @@ def parse_user_settings():
         description='Run test ORM project.'
     )
     parser.add_argument(
-        '--db', default=':memory:', const=':memory:', type='str',
-        help='Set db for ORM testing (default: %(default)'
+        '--db', default=':memory:', type=str,
+        help='Set db for ORM testing (default: %(default))'
     )
     return parser.parse_args()
 
@@ -27,12 +27,12 @@ def main():
 
         id = fields.AutoField()
         author = fields.ForeignKeyField(
-            Author, 'books', is_nullable=True, on_delete=models.CASCADE
+            Author, 'books', is_nullable=True, on_delete=sql.CASCADE
         )
         title = fields.CharField(default='Title')
         pages = fields.IntegerField(default=100)
         coauthor = fields.ForeignKeyField(
-            Author, 'cobooks', is_nullable=True, on_delete=models.NO_ACTION
+            Author, 'cobooks', is_nullable=True, on_delete=sql.NO_ACTION
         )
         rating = fields.IntegerField(default=10)
         name = fields.CharField(default='Book name')

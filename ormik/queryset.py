@@ -1,6 +1,5 @@
 from ormik import \
     DbOperationError, ObjectDoesNotExistError, MultipleObjectsError
-
 from ormik.db import OperationalError
 from ormik.sql import QuerySQL
 
@@ -130,6 +129,7 @@ class QuerySet():
         try:
             c.execute(self.querystring)
         except OperationalError as e:
+            print(self.querystring)
             raise DbOperationError(str(e))
 
         return c

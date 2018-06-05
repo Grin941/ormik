@@ -1,12 +1,16 @@
-from ormik import QueryError
-
-from ormik.fields import AutoField, ForeignKeyField
-from ormik.models import Model
+from ormik import QueryError, fields
+# from ormik.fields import AutoField, ForeignKeyField
+# from ormik.models import Model
 
 __all__ = ['FieldSQL', 'QueryError']
 
 
 NULL = 'NULL'
+
+CASCADE = 'CASCADE'
+RESTRICT = 'RESTRICT'
+SET_NULL = 'SET_NULL'
+NO_ACTION = 'NO ACTION'
 
 
 class FieldSQL:
@@ -23,7 +27,7 @@ class FieldSQL:
     def _generate_field_sql(self):
         field = self.field
         field_type = int if not hasattr(field, 'ty') else field.ty
-        field_is_autoincremented = isinstance(field, AutoField)
+        field_is_autoincremented = isinstance(field, fields.AutoField)
         sql = f'{field.name} {self.SQL_TYPES_MAPPING[field_type]}'
 
         if hasattr(field, 'max_length'):
@@ -50,7 +54,7 @@ class FieldSQL:
             f' REFERENCES {field.rel_model._table}'
             f' ({field.rel_model._pk.name})'
             f' ON DELETE {field.on_delete} ON UPDATE {field.on_update}'
-        ) if isinstance(field, ForeignKeyField) else None
+        ) if isinstance(field, fields.ForeignKeyField) else None
 
     @property
     def column_definition(self):
@@ -119,9 +123,9 @@ class QuerySQL:
         inst = self.model_instance
         columns, values = [], []
         for field_name, field in inst.fields.items():
-            if isinstance(field, AutoField): continue
+            if isinstance(field, fields.AutoField): continue
             field_value = getattr(inst, field_name)
-            if isinstance(field, ForeignKeyField):
+            if isinstance(field, fields.ForeignKeyField):
                 field_value = field_value.id
             if field_value is None:
                 field_value = NULL
@@ -255,8 +259,8 @@ class QuerySQL:
     def _normalize_update_value(self, update_value):
         if isinstance(update_value, str):
             update_value = f"'{update_value}'"
-        elif isinstance(update_value, Model):
-            update_value = getattr(update_value, update_value._pk.name)
+        # elif isinstance(update_value, Model):
+        #     update_value = getattr(update_value, update_value._pk.name)
         if update_value is None:
             update_value = NULL
         return update_value
