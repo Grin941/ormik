@@ -1,6 +1,4 @@
 from ormik import QueryError, fields
-# from ormik.fields import AutoField, ForeignKeyField
-# from ormik.models import Model
 
 __all__ = ['FieldSQL', 'QueryError']
 
@@ -65,6 +63,26 @@ class FieldSQL:
         return self._generate_fk_constraints()
 
 
+def _normalize_lookup_value(lookup_statement, lookup_value):
+    if lookup_statement == 'LIKE':
+        lookup_value = f"'%{lookup_value}%'"
+    elif lookup_statement == 'IN':
+        lookup_value = f'{tuple(lookup_value)}'
+    else:
+        if isinstance(lookup_value, str):
+            lookup_value = f"'{lookup_value}'"
+
+    return lookup_value
+
+
+def _normalize_field_value(field_value):
+    if isinstance(field_value, str):
+        field_value = f"'{field_value}'"
+    if field_value is None:
+        field_value = NULL
+    return field_value
+
+
 class QuerySQL:
 
     PRIMARY_MODEL_KEY = 'PRIMARYMODELKEY'
@@ -86,7 +104,6 @@ class QuerySQL:
         self.fk_joins = {
             self.PRIMARY_MODEL_KEY: 't0'
         }
-        self.model_instance = None
 
     @property
     def should_be_joined(self):
@@ -120,24 +137,14 @@ class QuerySQL:
 
     @property
     def insert_stmt(self):
-        inst = self.model_instance
-        columns, values = [], []
-        for field_name, field in inst.fields.items():
-            if isinstance(field, fields.AutoField): continue
-            field_value = getattr(inst, field_name)
-            if isinstance(field, fields.ForeignKeyField):
-                field_value = field_value.id
-            if field_value is None:
-                field_value = NULL
-            if hasattr(field, 'ty') and field.ty is str:
-                field_value = f"'{field_value}'"
-
-            columns.append(f"'{field_name}'")
-            values.append(f"{field_value}")
+        (
+            sql_columns_statement,
+            sql_values_statement
+        ) = self._sql_insert_statement()
 
         return (
-            f'INSERT INTO {self.model._table}({", ".join(columns)}) '
-            f'VALUES ({", ".join(values)})'
+            f'INSERT INTO {self.model._table}({sql_columns_statement}) '
+            f'VALUES ({sql_values_statement})'
         )
 
     @property
@@ -191,6 +198,19 @@ class QuerySQL:
 
         return sql
 
+    def _sql_insert_statement(self):
+        columns, values = [], []
+        for field, (
+            _, field_value
+        ) in self.query_statements['INSERT']['lookups'].items():
+            table_alias, field_name = field.split('.')
+            field_value = _normalize_field_value(field_value)
+
+            columns.append(f"'{field_name}'")
+            values.append(f"{field_value}")
+
+        return ', '.join(columns), ', '.join(values)
+
     def _sql_update_statement(self):
         sql_update_statement = []
         for field, (
@@ -200,7 +220,7 @@ class QuerySQL:
             if field_name == self.model._pk.name:
                 # PK can not be updated
                 continue
-            value = self._normalize_update_value(value)
+            value = _normalize_field_value(value)
             sql_update_statement.append(f'{field_name} = {value}')
         return ', '.join(sql_update_statement)
 
@@ -237,33 +257,13 @@ class QuerySQL:
         ) in self.query_statements['WHERE']['lookups'].items():
             if split_table_alias:
                 table_alias, field_name = field_name.split('.')
-            lookup_value = self._normalize_lookup_value(
+            lookup_value = _normalize_lookup_value(
                 lookup_statement, lookup_value
             )
             sql_where_statement.append(
                 f'{field_name} {lookup_statement} {lookup_value}'
             )
         return ' AND '.join(sql_where_statement)
-
-    def _normalize_lookup_value(self, lookup_statement, lookup_value):
-        if lookup_statement == 'LIKE':
-            lookup_value = f"'%{lookup_value}%'"
-        elif lookup_statement == 'IN':
-            lookup_value = f'{tuple(lookup_value)}'
-        else:
-            if isinstance(lookup_value, str):
-                lookup_value = f"'{lookup_value}'"
-
-        return lookup_value
-
-    def _normalize_update_value(self, update_value):
-        if isinstance(update_value, str):
-            update_value = f"'{update_value}'"
-        # elif isinstance(update_value, Model):
-        #     update_value = getattr(update_value, update_value._pk.name)
-        if update_value is None:
-            update_value = NULL
-        return update_value
 
     def _fill_statement_fields(
         self,
@@ -325,7 +325,3 @@ class QuerySQL:
         self._fill_statement_lookups(statement_meta['lookups'], **kwargs)
 
         query_statement_dict[statement_alias] = statement_meta
-
-    def set_model_instance(self, model_instance=None, **kwargs):
-        self.model_instance = self.model(**kwargs) if \
-            model_instance is None else model_instance

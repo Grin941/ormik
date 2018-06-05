@@ -1,7 +1,22 @@
+from functools import wraps
+
 from ormik import \
     DbOperationError, ObjectDoesNotExistError, MultipleObjectsError
 from ormik.db import OperationalError
 from ormik.sql import QuerySQL
+from ormik.models import Model
+
+
+def clear_lookup_statements(cls_method):
+    @wraps(cls_method)
+    def wrapper(qs, *args, **kwargs):
+        # Prevent passing Model instance in lookup statements
+        # For example update(fk_field=fk_instance)
+        for k, v in kwargs.items():
+            if isinstance(v, Model):
+                kwargs[k] = getattr(v, v._pk.name)
+        return cls_method(qs, *args, **kwargs)
+    return wrapper
 
 
 class QuerySet():
@@ -19,29 +34,33 @@ class QuerySet():
     def __iter__(self):
         return iter(self.select_all())
 
-    def _save(self, model_instance, *args, **kwargs):
+    def _save(self, model_instance):
         inst_dict = model_instance.__dict__
-        if inst_dict.get('id') is None:
-            return self.create(*args, **inst_dict)
+        inst_id = inst_dict.pop('id')
+        if inst_id is None:
+            return self.create(**inst_dict)
         else:
-            return self._update_and_get(*args, **inst_dict)
+            return self._update_and_get(**inst_dict)
 
-    def _update_and_get(self, *args, **kwargs):
-        self.query.append_statement('UPDATE', *args, **kwargs)
+    @clear_lookup_statements
+    def _update_and_get(self, **kwargs):
+        self.query.append_statement('UPDATE', **kwargs)
         cursor = self._execute('update_stmt')
         self.db.connection.commit()
 
         return self.get(**{self.model_pk_name: cursor.lastrowid})
 
-    def create(self, *args, **kwargs):
-        self.query.set_model_instance(**kwargs)
+    @clear_lookup_statements
+    def create(self, **kwargs):
+        self.query.append_statement('INSERT', **kwargs)
         cursor = self._execute('insert_stmt')
         self.db.connection.commit()
 
         return self.get(**{self.model_pk_name: cursor.lastrowid})
 
-    def update(self, *args, **kwargs):
-        self.query.append_statement('UPDATE', *args, **kwargs)
+    @clear_lookup_statements
+    def update(self, **kwargs):
+        self.query.append_statement('UPDATE', **kwargs)
         cursor = self._execute('update_stmt')
         self.db.connection.commit()
 
@@ -52,16 +71,17 @@ class QuerySet():
             # Join should be made.
             # Make it upon 'pk' to create request "WHERE PK in (SELECT PK ...)
             self.query.append_statement(
-                'SELECT', *(self.model_pk_name, ), **{}
+                'SELECT', *(self.model_pk_name, )
             )
         cursor = self._execute('delete_stmt')
         self.db.connection.commit()
 
         return cursor.rowcount
 
-    def get(self, *args, **kwargs):
-        self.query.append_statement('SELECT', *args, **kwargs)
-        self.query.append_statement('WHERE', *args, **kwargs)
+    @clear_lookup_statements
+    def get(self, **kwargs):
+        self.query.append_statement('SELECT', **kwargs)
+        self.query.append_statement('WHERE', **kwargs)
         cursor = self._execute('select_stmt')
 
         values = cursor.fetchall()
@@ -78,14 +98,15 @@ class QuerySet():
 
         return self.model(**dict(values[0]))
 
-    def get_or_create(self, *args, **kwargs):
+    @clear_lookup_statements
+    def get_or_create(self, **kwargs):
         try:
-            return self.get(*args, **kwargs)
+            return self.get(**kwargs)
         except ObjectDoesNotExistError:
-            return self.create(*args, **kwargs)
+            return self.create(**kwargs)
 
-    def select_all(self, *args, **kwargs):
-        self.query.append_statement('SELECT', *args, **kwargs)
+    def select_all(self):
+        self.query.append_statement('SELECT')
         cursor = self._execute('select_stmt')
         values = cursor.fetchall()
 
@@ -95,9 +116,9 @@ class QuerySet():
             ) for init_kwargs in values
         ]
 
-    def values(self, *args, **kwargs):
+    def values(self, *args):
         self.query.append_statement(
-            'SELECT', with_fields_alias=True, *args, **kwargs
+            'SELECT', with_fields_alias=True, *args
         )
         cursor = self._execute('select_stmt')
 
@@ -105,32 +126,32 @@ class QuerySet():
             dict(values_row) for values_row in cursor.fetchall()
         ]
 
-    def filter(self, *args, **kwargs):
-        self.query.append_statement('WHERE', *args, **kwargs)
+    @clear_lookup_statements
+    def filter(self, **kwargs):
+        self.query.append_statement('WHERE', **kwargs)
 
         return self
 
-    def create_table(self, *args, **kwargs):
+    def create_table(self):
         self._execute('create_table_stmt')
         self.db.connection.commit()
 
         return True
 
-    def drop_table(self, *args, **kwargs):
+    def drop_table(self):
         self._execute('drop_table_stmt')
         self.db.connection.commit()
 
         return True
 
-    def _execute(self, query_attr, *args, **kwargs):
+    def _execute(self, query_attr):
         c = self.db.connection.cursor()
         c.execute("PRAGMA foreign_keys = ON")
         self.querystring = f'{getattr(self.query, query_attr)};'
         try:
             c.execute(self.querystring)
         except OperationalError as e:
-            print(self.querystring)
-            raise DbOperationError(str(e))
+            raise DbOperationError(str(e), self.querystring)
 
         return c
 

@@ -75,7 +75,7 @@ def main():
     print('All books', books)
 
     print('Filter books')
-    for book in Book.filter(pages__gt=10):
+    for book in Book.filter(pages__gt=10, author=author):
         print(book)
     print('Author books')
     for book in author.books:
