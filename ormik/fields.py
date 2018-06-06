@@ -12,11 +12,11 @@ class Field:
 
     def __init__(
         self,
-        name=None, null=True, default=None, primary_key=False,
+        name=None, is_nullable=True, default=None, primary_key=False,
         **kwargs
     ):
         self.name = name
-        self.is_nullable = null
+        self.is_nullable = is_nullable
         self.default_value = default
         self.is_primary_key = primary_key
         self.query = FieldSQL(self)
@@ -46,7 +46,7 @@ class SizedField(Field):
     def __set__(self, instance, value):
         if value is not None and len(value) > self.max_length:
             raise FieldError(
-                f'"{self.name}" field maxlen should be < {self.maxlen}'
+                f'"{self.name}" field maxlen should be < {self.max_length}'
             )
         super().__set__(instance, value)
 

@@ -3,6 +3,7 @@ pytest==3.3.2; python_version >= '3.3'
 pytest==3.2.5; python_version < '3.3'
 pytest-cov==2.4.0
 codecov==2.0.15
+mock==2.0.0
 
 # Code metrics
 flake8==3.5.0

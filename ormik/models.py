@@ -5,22 +5,6 @@ __all__ = ['Model']
 
 class ModelMeta(type):
 
-    @staticmethod
-    def _add_reversed_fk(fk_field, fk_model):
-        setattr(
-            fk_field.rel_model,
-            fk_field.reverse_name,
-            fields.ReversedForeignKeyField(fk_model, fk_field.name)
-        )
-
-    @staticmethod
-    def _validate_pk_count(pk_count, model_name):
-        # 1 PK should be defined
-        if pk_count != 1 and model_name != 'Model':
-            raise PkCountError(
-                f'Model "{model_name}" has {pk_count} PKs.'
-            )
-
     def __new__(mtcls, name, bases, clsdict):
         # Add bases fields to model_cls
         for base_class in bases:
@@ -42,15 +26,24 @@ class ModelMeta(type):
         pk_count = 0
         for model_field_name, model_field in model_cls._fields.items():
             model_field.name = model_field_name
+            model_cls._fields[model_field_name] = model_field
             if model_field.is_primary_key:
+                if pk_count > 0:
+                    # PK is already set
+                    raise PkCountError(
+                        f'Model "{model_cls.__name__}" has >1 PKs.'
+                    )
+
                 model_cls._pk = model_field
                 pk_count += 1
 
             # Create reverse_attr for FK model
             if isinstance(model_field, fields.ForeignKeyField):
-                ModelMeta._add_reversed_fk(model_field, model_cls)
-
-        ModelMeta._validate_pk_count(pk_count, name)
+                setattr(
+                    model_field.rel_model,
+                    model_field.reverse_name,
+                    fields.ReversedForeignKeyField(model_cls, model_field.name)
+                )
 
         return model_cls
 
@@ -69,6 +62,11 @@ class ModelMeta(type):
 class Model(metaclass=ModelMeta):
 
     def __init__(self, *args, **kwargs):
+        if self._pk is None and self.__class__ is not Model:
+            raise PkCountError(
+                f'Model "{self.__class__.__name__}" has no PKs.'
+            )
+
         if self.query_manager is None:
             # query_manager attribute is set to a model
             # when register in database,

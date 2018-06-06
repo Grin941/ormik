@@ -25,6 +25,7 @@ show_missing = True
 omit =
     test/*
     setup.py
+    bin/*
 
 [html]
 directory = coverage_html_report
