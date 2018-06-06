@@ -63,6 +63,7 @@ class Model(metaclass=ModelMeta):
 
     def __init__(self, *args, **kwargs):
         if self._pk is None and self.__class__ is not Model:
+            # Model class has no fields
             raise PkCountError(
                 f'Model "{self.__class__.__name__}" has no PKs.'
             )

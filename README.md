@@ -149,6 +149,17 @@ __contains ->    LIKE
 __in       ->    IN
 ```
 
+## Lookups that span relationships
+
+To span a relationship, just use the field name of related fields across models, separated by double underscores, until you get to the field you want.
+SQL ```Join``` would be made for you.
+Note that only one relationship lookup are available:
+
+```
+blog__name            ->    OK
+magazine__blog__name  ->    NOT OK
+```
+
 ## Queryset methods
 
 ```
